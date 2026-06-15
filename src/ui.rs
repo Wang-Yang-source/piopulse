@@ -18,12 +18,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ])
         .split(f.size());
 
+    app.layout_zones.header = chunks[0];
+
     draw_header(f, app, chunks[0]);
     draw_main_area(f, app, chunks[1]);
     draw_footer(f, app, chunks[2]);
 
     if app.is_entering_password {
-        draw_password_modal(f, app);
+        let area = center_rect(45, 11, f.size());
+        app.layout_zones.password_modal = area;
+        draw_password_modal(f, app, area);
     }
 }
 
@@ -48,18 +52,10 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(" [OPERATOR MODE] ", Style::default().fg(Color::Rgb(34, 197, 94)).add_modifier(Modifier::BOLD)) // Green 500
     };
 
-    let sim_span = if app.simulation_mode {
-        Span::styled(" [SIMULATION ACTIVE] ", Style::default().fg(Color::Rgb(234, 179, 8))) // Yellow 500
-    } else {
-        Span::styled(" [HARDWARE DIRECT] ", Style::default().fg(Color::Rgb(59, 130, 246))) // Blue 500
-    };
-
     let header_text = Line::from(vec![
         title,
         Span::raw(" | "),
         mode_span,
-        Span::raw(" | "),
-        sim_span,
     ]);
 
     let header = Paragraph::new(header_text)
@@ -71,7 +67,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_footer(f: &mut Frame, _app: &App, area: Rect) {
     let footer_text = Span::styled(
-        " F1/Tab: Toggle Admin | Space: Start Flash | s: Toggle Simulation | c: Clear Stats | 1/2/3: Tabs | Esc: Quit",
+        " F1/Tab: Toggle Admin | Space: Start Flash | c: Clear Stats | 1/2/3: Tabs | Esc: Quit",
         Style::default().fg(Color::Rgb(148, 163, 184)), // Slate 400
     );
     f.render_widget(Paragraph::new(footer_text), area);
@@ -115,19 +111,23 @@ fn draw_workspace(f: &mut Frame, app: &mut App, area: Rect) {
         );
 
     f.render_widget(tabs, chunks[0]);
+    app.layout_zones.tabs = chunks[0];
 
     // Render Tab Content
     match app.active_tab {
         ActiveTab::Channels => draw_channels_tab(f, app, chunks[1]),
         ActiveTab::Logs => draw_logs_tab(f, app, chunks[1]),
-        ActiveTab::Configuration => draw_config_tab(f, app, chunks[1]),
+        ActiveTab::Configuration => {
+            app.layout_zones.config_table = chunks[1];
+            draw_config_tab(f, app, chunks[1]);
+        }
     }
 }
 
 fn draw_channels_tab(f: &mut Frame, app: &mut App, area: Rect) {
     if app.channels.is_empty() {
         let empty_msg = Paragraph::new(
-            "\n\n\n\nNo serial devices detected.\n\nEnsure ESP32 devices are plugged in and press 's' to toggle Simulation Mode.",
+            "\n\n\n\nNo serial devices detected.\n\nEnsure ESP32 devices are plugged in and powered.",
         )
         .alignment(ratatui::layout::Alignment::Center)
         .style(Style::default().fg(Color::Rgb(148, 163, 184)));
@@ -190,6 +190,7 @@ fn draw_channel_card(f: &mut Frame, _app: &App, channel: &Channel, area: Rect) {
     let detail_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1), // USB Device Details
             Constraint::Length(1), // Chip / MAC
             Constraint::Length(1), // Status / Speed
             Constraint::Length(2), // Progress Bar & Text
@@ -197,17 +198,35 @@ fn draw_channel_card(f: &mut Frame, _app: &App, channel: &Channel, area: Rect) {
         ])
         .split(card_area);
 
+    // Line 0: USB Device Details
+    let manufacturer = channel.usb_manufacturer.as_deref().unwrap_or("");
+    let product = channel.usb_product.as_deref().unwrap_or("USB Serial Device");
+    let dev_name = if manufacturer.is_empty() {
+        product.to_string()
+    } else {
+        format!("{} {}", manufacturer, product)
+    };
+    let dev_id_str = match (channel.vid, channel.pid) {
+        (Some(v), Some(p)) => format!(" ({:04X}:{:04X})", v, p),
+        _ => "".to_string(),
+    };
+    let line0 = Line::from(vec![
+        Span::styled("Device: ", Style::default().fg(Color::Rgb(148, 163, 184))),
+        Span::styled(format!("{}{}", dev_name, dev_id_str), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+    ]);
+    f.render_widget(Paragraph::new(line0), detail_chunks[0]);
+
     // Line 1: Chip & MAC
     let chip_str = channel.chip.as_deref().unwrap_or("Detecting...");
     let mac_str = channel.mac.as_deref().unwrap_or("XX:XX:XX:XX:XX:XX");
     let line1 = Line::from(vec![
-        Span::styled("Chip: ", Style::default().fg(Color::Rgb(148, 163, 184))),
+        Span::styled("Chip:   ", Style::default().fg(Color::Rgb(148, 163, 184))),
         Span::styled(chip_str, Style::default().fg(Color::White)),
         Span::raw("   "),
         Span::styled("MAC: ", Style::default().fg(Color::Rgb(148, 163, 184))),
         Span::styled(mac_str, Style::default().fg(Color::White)),
     ]);
-    f.render_widget(Paragraph::new(line1), detail_chunks[0]);
+    f.render_widget(Paragraph::new(line1), detail_chunks[1]);
 
     // Line 2: Status & Speed
     let line2 = Line::from(vec![
@@ -217,7 +236,7 @@ fn draw_channel_card(f: &mut Frame, _app: &App, channel: &Channel, area: Rect) {
         Span::styled("Speed: ", Style::default().fg(Color::Rgb(148, 163, 184))),
         Span::styled(&channel.speed, Style::default().fg(Color::White)),
     ]);
-    f.render_widget(Paragraph::new(line2), detail_chunks[1]);
+    f.render_widget(Paragraph::new(line2), detail_chunks[2]);
 
     // Line 3 & 4: Progress Bar
     let gauge = Gauge::default()
@@ -245,6 +264,7 @@ fn draw_logs_tab(f: &mut Frame, app: &App, area: Rect) {
         .logs
         .iter()
         .rev() // Show latest logs at the top
+        .skip(app.logs_scroll_offset)
         .map(|log| {
             // Give specific coloring to certain messages
             let style = if log.contains("FAILED") || log.contains("Error") {
@@ -312,7 +332,7 @@ fn draw_config_tab(f: &mut Frame, app: &App, area: Rect) {
         let val_span = if is_selected {
             if app.is_editing_config {
                 Span::styled(
-                    format!("{} █", val), // Mock cursor
+                    format!("{} █", app.edit_buffer), // Mock cursor
                     Style::default()
                         .fg(Color::Rgb(251, 146, 60))
                         .add_modifier(Modifier::REVERSED),
@@ -371,12 +391,14 @@ fn table_cell<'a>(span: Span<'a>) -> Line<'a> {
     Line::from(span)
 }
 
-fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
+fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     // Split vertical: Stats (50%), Instructions (50%)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(area);
+
+    app.layout_zones.help_sidebar = chunks[1];
 
     draw_stats(f, app, chunks[0]);
     draw_instructions(f, app, chunks[1]);
@@ -450,10 +472,6 @@ fn draw_instructions(f: &mut Frame, _app: &App, area: Rect) {
             Span::styled("    - Toggle Admin Auth Mode", Style::default().fg(Color::Rgb(226, 232, 240))),
         ]),
         Line::from(vec![
-            Span::styled("s", Style::default().fg(Color::Rgb(251, 146, 60)).add_modifier(Modifier::BOLD)),
-            Span::styled("      - Toggle Hardware/Sim Mode", Style::default().fg(Color::Rgb(226, 232, 240))),
-        ]),
-        Line::from(vec![
             Span::styled("c", Style::default().fg(Color::Rgb(251, 146, 60)).add_modifier(Modifier::BOLD)),
             Span::styled("      - Clear Statistics Counters", Style::default().fg(Color::Rgb(226, 232, 240))),
         ]),
@@ -477,13 +495,12 @@ fn draw_instructions(f: &mut Frame, _app: &App, area: Rect) {
     f.render_widget(help_widget, inner_area);
 }
 
-fn draw_password_modal(f: &mut Frame, app: &App) {
+fn draw_password_modal(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(" Admin Authorization Required ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(239, 68, 68)));
 
-    let area = center_rect(45, 12, f.size());
     let inner_area = block.inner(area);
     
     // Dim background
@@ -495,6 +512,7 @@ fn draw_password_modal(f: &mut Frame, app: &App) {
         .constraints([
             Constraint::Length(1), // Title line
             Constraint::Length(3), // Input box
+            Constraint::Length(1), // Help / Cancel line
             Constraint::Length(1), // Error line
             Constraint::Min(0),
         ])
@@ -511,10 +529,14 @@ fn draw_password_modal(f: &mut Frame, app: &App) {
         .style(Style::default().fg(Color::White));
     f.render_widget(input_widget, text_chunks[1]);
 
+    let cancel_msg = Paragraph::new("Press Enter to submit | Click outside / Esc to cancel")
+        .style(Style::default().fg(Color::Rgb(148, 163, 184)));
+    f.render_widget(cancel_msg, text_chunks[2]);
+
     if app.password_incorrect {
         let err_msg = Paragraph::new("Incorrect password. Press Enter to retry.")
             .style(Style::default().fg(Color::Rgb(239, 68, 68)));
-        f.render_widget(err_msg, text_chunks[2]);
+        f.render_widget(err_msg, text_chunks[3]);
     }
 }
 

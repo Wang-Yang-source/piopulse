@@ -55,4 +55,48 @@ impl ProjectConfig {
         let mut file = File::create(path).map_err(|e| e.to_string())?;
         file.write_all(contents.as_bytes()).map_err(|e| e.to_string())
     }
+
+    pub fn get_field(&self, index: usize) -> String {
+        match index {
+            0 => self.name.clone(),
+            1 => self.chip_type.clone(),
+            2 => self.baud_rate.to_string(),
+            3 => self.flash_mode.clone(),
+            4 => self.flash_freq.clone(),
+            5 => self.flash_size.clone(),
+            6 => self.bootloader_offset.clone(),
+            7 => self.bootloader_path.clone(),
+            8 => self.partitions_offset.clone(),
+            9 => self.partitions_path.clone(),
+            10 => self.otadata_offset.clone(),
+            11 => self.otadata_path.clone(),
+            12 => self.app_offset.clone(),
+            13 => self.app_path.clone(),
+            _ => String::new(),
+        }
+    }
+
+    pub fn set_field(&mut self, index: usize, value: String) {
+        match index {
+            0 => self.name = value,
+            1 => self.chip_type = value,
+            2 => {
+                if let Ok(b) = value.parse::<u32>() {
+                    self.baud_rate = b;
+                }
+            }
+            3 => self.flash_mode = value,
+            4 => self.flash_freq = value,
+            5 => self.flash_size = value,
+            6 => self.bootloader_offset = value,
+            7 => self.bootloader_path = value,
+            8 => self.partitions_offset = value,
+            9 => self.partitions_path = value,
+            10 => self.otadata_offset = value,
+            11 => self.otadata_path = value,
+            12 => self.app_offset = value,
+            13 => self.app_path = value,
+            _ => {}
+        }
+    }
 }
