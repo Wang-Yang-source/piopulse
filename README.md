@@ -1,5 +1,9 @@
 # ☕ PioPulse
 
+[![Crates.io](https://img.shields.io/crates/v/piopulse.svg)](https://crates.io/crates/piopulse)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Docs.rs](https://docs.rs/piopulse/badge.svg)](https://docs.rs/piopulse)
+
 **PioPulse** is a terminal user interface (TUI) factory flashing tool designed for high-concurrency ESP32 chip flashing on production lines. 
 
 Unlike general-purpose tools like PlatformIO or Arduino IDE, PioPulse is built specifically for factory environments. It prioritizes **fail-safe operation (anti-fooling / 防呆)**, **extreme parallel execution**, **comprehensive QA testing**, and **production line audit logs**.
