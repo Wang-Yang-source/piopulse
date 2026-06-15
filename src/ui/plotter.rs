@@ -1,5 +1,6 @@
 use crate::app::App;
 use crate::ui::theme::{CATPPUCCIN_MOCHA, mocha};
+use crate::ui::tr;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -39,7 +40,12 @@ fn draw_header_bar(f: &mut Frame, app: &App, area: Rect) {
         .get_selected_port()
         .unwrap_or_else(|| "NONE".to_string());
     let is_running = app.simulation_active;
-    let stream_label = if is_running { "RUNNING" } else { "PAUSED" };
+    let lang = &app.tool_config.language;
+    let stream_label = if is_running {
+        if lang == "zh" { "运行中" } else { "RUNNING" }
+    } else {
+        if lang == "zh" { "已暂停" } else { "PAUSED" }
+    };
     let stream_color = if is_running {
         CATPPUCCIN_MOCHA.success
     } else {
@@ -52,32 +58,32 @@ fn draw_header_bar(f: &mut Frame, app: &App, area: Rect) {
     let lines = vec![
         Line::from(vec![
             Span::styled(
-                " WAVEFORM PLOTTER ",
+                tr("plot_title", lang),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.text)
                     .bg(mocha::SURFACE1)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            pill("Port", &selected_port, CATPPUCCIN_MOCHA.primary),
+            pill(if lang == "zh" { "端口" } else { "Port" }, &selected_port, CATPPUCCIN_MOCHA.primary),
             Span::raw("  "),
-            pill("Protocol", &protocol_str, CATPPUCCIN_MOCHA.accent),
+            pill(if lang == "zh" { "协议" } else { "Protocol" }, &protocol_str, CATPPUCCIN_MOCHA.accent),
             Span::raw("  "),
-            pill("View", &view_str, CATPPUCCIN_MOCHA.info),
+            pill(if lang == "zh" { "视图" } else { "View" }, &view_str, CATPPUCCIN_MOCHA.info),
             Span::raw("  "),
-            pill("State", stream_label, stream_color),
+            pill(if lang == "zh" { "状态" } else { "State" }, stream_label, stream_color),
         ]),
         Line::from(vec![
             key_hint("Left/Right"),
-            Span::raw(" select port   "),
+            Span::raw(tr("plot_port_hint", lang)),
             key_hint("M"),
-            Span::raw(" protocol   "),
+            Span::raw(tr("plot_protocol_hint", lang)),
             key_hint("V"),
-            Span::raw(" view   "),
+            Span::raw(tr("plot_view_hint", lang)),
             key_hint("Space/S"),
-            Span::raw(" start/pause   "),
+            Span::raw(tr("plot_start_hint", lang)),
             key_hint("C"),
-            Span::raw(" clear buffer"),
+            Span::raw(tr("plot_clear_hint", lang)),
         ]),
     ];
 
@@ -111,6 +117,7 @@ fn key_hint<'a>(key: &'a str) -> Span<'a> {
 }
 
 fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
+    let lang = &app.tool_config.language;
     match app.plotter_mode {
         crate::app::PlotterMode::IMUCube | crate::app::PlotterMode::RoiImage => {
             draw_receive_console(f, app, area);
@@ -239,10 +246,11 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                             let status_tag = if app.simulation_active {
                                 ""
                             } else {
-                                " [PAUSED]"
+                                if lang == "zh" { " [已暂停]" } else { " [PAUSED]" }
                             };
                             let title_str = format!(
-                                " Waveform Scope ({}){} ",
+                                " {} ({}){} ",
+                                if lang == "zh" { "波形观测器 Scope" } else { "Waveform Scope" },
                                 selected_port.unwrap(),
                                 status_tag
                             );
@@ -328,10 +336,11 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                             let status_tag = if app.simulation_active {
                                 ""
                             } else {
-                                " [PAUSED]"
+                                if lang == "zh" { " [已暂停]" } else { " [PAUSED]" }
                             };
                             let title_str = format!(
-                                " Bar Chart - Latest Channel Values ({}){} ",
+                                " {} ({}){} ",
+                                if lang == "zh" { "柱状图 - 通道实时数值" } else { "Bar Chart - Latest Channel Values" },
                                 selected_port.unwrap(),
                                 status_tag
                             );
@@ -414,7 +423,7 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
 
                             if ch0_vals.is_empty() {
                                 let helper = Paragraph::new(
-                                    "No active data for CH 0 Histogram calculation.",
+                                    if lang == "zh" { "无活动数据用于通道 0 直方图计算。" } else { "No active data for CH 0 Histogram calculation." },
                                 )
                                 .style(Style::default().fg(CATPPUCCIN_MOCHA.text_muted))
                                 .alignment(Alignment::Center);
@@ -442,10 +451,11 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                                 let status_tag = if app.simulation_active {
                                     ""
                                 } else {
-                                    " [PAUSED]"
+                                    if lang == "zh" { " [已暂停]" } else { " [PAUSED]" }
                                 };
                                 let title_str = format!(
-                                    " Real-Time Histogram - CH 0 Statistical Distribution ({}){} ",
+                                    " {} ({}){} ",
+                                    if lang == "zh" { "实时直方图 - 通道 0 统计分布" } else { "Real-Time Histogram - CH 0 Statistical Distribution" },
                                     selected_port.unwrap(),
                                     status_tag
                                 );
@@ -507,12 +517,12 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                                         ctx.print(
                                             4.5,
                                             max_count * 1.05,
-                                            format!("Range: [{:.1}, {:.1}]", min_val, max_val),
+                                            if lang == "zh" { format!("范围: [{:.1}, {:.1}]", min_val, max_val) } else { format!("Range: [{:.1}, {:.1}]", min_val, max_val) },
                                         );
                                         ctx.print(
                                             4.5,
                                             max_count * 0.95,
-                                            format!("Samples: {}", ch0_vals.len()),
+                                            if lang == "zh" { format!("样本数: {}", ch0_vals.len()) } else { format!("Samples: {}", ch0_vals.len()) },
                                         );
                                     });
 
@@ -531,10 +541,10 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
 
                             if ch0_vals.len() < 8 {
                                 let helper = Paragraph::new(
-                            "Insufficient data points for FFT analysis (Need >= 8 samples).",
-                        )
-                        .style(Style::default().fg(CATPPUCCIN_MOCHA.text_muted))
-                        .alignment(Alignment::Center);
+                                    if lang == "zh" { "数据点不足，无法进行 FFT 分析（需要至少 8 个样本）。" } else { "Insufficient data points for FFT analysis (Need >= 8 samples)." },
+                                )
+                                .style(Style::default().fg(CATPPUCCIN_MOCHA.text_muted))
+                                .alignment(Alignment::Center);
                                 f.render_widget(helper, area);
                             } else {
                                 let mut x = vec![0.0; 32];
@@ -585,10 +595,11 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                                 let status_tag = if app.simulation_active {
                                     ""
                                 } else {
-                                    " [PAUSED]"
+                                    if lang == "zh" { " [已暂停]" } else { " [PAUSED]" }
                                 };
                                 let title_str = format!(
-                                    " Real-Time FFT Spectrum - CH 0 Frequency Domain ({}){} ",
+                                    " {} ({}){} ",
+                                    if lang == "zh" { "实时 FFT 频谱图 - 通道 0 频域" } else { "Real-Time FFT Spectrum - CH 0 Frequency Domain" },
                                     selected_port.unwrap(),
                                     status_tag
                                 );
@@ -641,12 +652,12 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                                         ctx.print(
                                             9.0,
                                             max_mag * 1.05,
-                                            format!("Peak Freq: {:.2} Hz", peak_freq),
+                                            if lang == "zh" { format!("峰值频率: {:.2} Hz", peak_freq) } else { format!("Peak Freq: {:.2} Hz", peak_freq) },
                                         );
                                         ctx.print(
                                             9.0,
                                             max_mag * 0.95,
-                                            format!("Resolution: {:.4} Hz/bin", hz_per_bin),
+                                            if lang == "zh" { format!("分辨率: {:.4} Hz/bin", hz_per_bin) } else { format!("Resolution: {:.4} Hz/bin", hz_per_bin) },
                                         );
                                     });
 
@@ -687,10 +698,11 @@ fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
         .get_selected_port()
         .unwrap_or_else(|| "NONE".to_string());
     let mut console_lines = Vec::new();
+    let lang = &app.tool_config.language;
 
     console_lines.push(Line::from(vec![
         Span::styled(
-            "RX Console",
+            if lang == "zh" { "接收控制台" } else { "RX Console" },
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -708,7 +720,7 @@ fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
                 .bg(mocha::SURFACE0),
         ),
         Span::styled(
-            "  AutoScroll ON  ",
+            if lang == "zh" { "  自动滚动 开启  " } else { "  AutoScroll ON  " },
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.info)
                 .bg(mocha::SURFACE0),
@@ -719,7 +731,7 @@ fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
     let visible_logs: Vec<&String> = app.logs.iter().rev().take(10).collect();
     if visible_logs.is_empty() {
         console_lines.push(Line::from(Span::styled(
-            "No serial data yet. Select a port and start streaming.",
+            tr("plot_no_data", lang),
             Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
         )));
     } else {
@@ -742,11 +754,11 @@ fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
     let footer = Line::from(vec![
         Span::styled("RX ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
         Span::styled(
-            format!("{} lines", app.logs.len()),
+            format!("{}{}", app.logs.len(), tr("plot_lines", lang)),
             Style::default().fg(CATPPUCCIN_MOCHA.text),
         ),
         Span::raw("   "),
-        Span::styled("Port ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+        Span::styled(tr("plot_port", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
         Span::styled(
             selected_port,
             Style::default()
@@ -764,7 +776,7 @@ fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border_focus))
                 .title(Span::styled(
-                    " Receive / Parsed Data ",
+                    tr("plot_rx_parsed_title", lang),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),
@@ -784,10 +796,11 @@ fn draw_port_selector(f: &mut Frame, app: &App, area: Rect) {
         .get_selected_port()
         .unwrap_or_else(|| "NONE".to_string());
 
+    let lang = &app.tool_config.language;
     let mut port_lines = Vec::new();
     if ports.is_empty() {
         port_lines.push(Line::from(Span::styled(
-            "No ports available",
+            tr("plot_no_ports", lang),
             Style::default().fg(CATPPUCCIN_MOCHA.danger),
         )));
     } else {
@@ -796,12 +809,12 @@ fn draw_port_selector(f: &mut Frame, app: &App, area: Rect) {
             let line = if is_selected {
                 let status = if port == "SIMULATED" {
                     if app.simulation_active {
-                        "  SIM ON"
+                        tr("plot_sim_on", lang)
                     } else {
-                        "  SIM OFF"
+                        tr("plot_sim_off", lang)
                     }
                 } else {
-                    "  ACTIVE"
+                    tr("plot_active", lang)
                 };
                 let status_color = if port == "SIMULATED" && !app.simulation_active {
                     CATPPUCCIN_MOCHA.warning
@@ -826,9 +839,9 @@ fn draw_port_selector(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 let suffix = if port == "SIMULATED" {
                     if app.simulation_active {
-                        "  SIM ON"
+                        tr("plot_sim_on", lang)
                     } else {
-                        "  SIM OFF"
+                        tr("plot_sim_off", lang)
                     }
                 } else {
                     ""
@@ -850,7 +863,7 @@ fn draw_port_selector(f: &mut Frame, app: &App, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
                 .title(Span::styled(
-                    " Ports ",
+                    tr("plot_ports_list", lang),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),
@@ -867,17 +880,18 @@ fn draw_serial_profile(f: &mut Frame, app: &App, area: Rect) {
     } else {
         CATPPUCCIN_MOCHA.warning
     };
+    let lang = &app.tool_config.language;
     let lines = vec![
         Line::from(vec![
             Span::styled(
-                "State     ",
+                tr("plot_state", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
                 if app.simulation_active {
-                    "Connected"
+                    tr("plot_connected", lang)
                 } else {
-                    "Paused"
+                    tr("plot_paused", lang)
                 },
                 Style::default()
                     .fg(status_color)
@@ -886,35 +900,35 @@ fn draw_serial_profile(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
-                "Baud      ",
+                tr("plot_baud", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled("115200", Style::default().fg(CATPPUCCIN_MOCHA.text)),
         ]),
         Line::from(vec![
             Span::styled(
-                "Format    ",
+                tr("plot_format", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled("8-N-1", Style::default().fg(CATPPUCCIN_MOCHA.text)),
         ]),
         Line::from(vec![
             Span::styled(
-                "Flow      ",
+                tr("plot_flow", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
-            Span::styled("None", Style::default().fg(CATPPUCCIN_MOCHA.text)),
+            Span::styled(tr("plot_none", lang), Style::default().fg(CATPPUCCIN_MOCHA.text)),
         ]),
         Line::from(vec![
             Span::styled(
-                "Line end  ",
+                tr("plot_line_end", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled("\\n", Style::default().fg(CATPPUCCIN_MOCHA.text)),
         ]),
         Line::from(vec![
             Span::styled(
-                "Buffer    ",
+                tr("plot_buffer", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled("OK", Style::default().fg(CATPPUCCIN_MOCHA.success)),
@@ -928,7 +942,7 @@ fn draw_serial_profile(f: &mut Frame, app: &App, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
                 .title(Span::styled(
-                    " Serial Profile ",
+                    tr("plot_profile_title", lang),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),
@@ -1024,15 +1038,21 @@ fn draw_telemetry_stats(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    let lang = &app.tool_config.language;
     let stats_table = if rows.is_empty() {
         Table::new(
             vec![Row::new(vec![Cell::from(
-                "Waiting for serial stream data...",
+                tr("plot_waiting_data", lang),
             )])],
             [Constraint::Percentage(100)],
         )
     } else {
-        let header_cells = vec!["Channel", "Current", "Min", "Max", "Avg"]
+        let headers = if lang == "zh" {
+            vec!["通道", "当前值", "最小值", "最大值", "平均值"]
+        } else {
+            vec!["Channel", "Current", "Min", "Max", "Avg"]
+        };
+        let header_cells = headers
             .into_iter()
             .map(|h| {
                 Cell::from(Span::styled(
@@ -1064,7 +1084,7 @@ fn draw_telemetry_stats(f: &mut Frame, app: &App, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
                 .title(Span::styled(
-                    " Live Statistics ",
+                    tr("plot_live_stats", lang),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),
@@ -1079,8 +1099,13 @@ fn draw_send_panel(f: &mut Frame, app: &App, area: Rect) {
     let selected_port = app
         .get_selected_port()
         .unwrap_or_else(|| "NONE".to_string());
+    let lang = &app.tool_config.language;
     let has_port = app.get_selected_port().is_some();
-    let tx_state = if has_port { "Ready" } else { "Inactive" };
+    let tx_state = if has_port {
+        tr("plot_tx_state_ready", lang)
+    } else {
+        tr("plot_tx_state_inactive", lang)
+    };
     let tx_color = if has_port {
         CATPPUCCIN_MOCHA.success
     } else {
@@ -1095,7 +1120,7 @@ fn draw_send_panel(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(tx_color).add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled("Mode ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(tr("plot_tx_mode", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
             Span::styled(
                 "Text",
                 Style::default()
@@ -1111,10 +1136,10 @@ fn draw_send_panel(f: &mut Frame, app: &App, area: Rect) {
                     .bg(mocha::SURFACE0),
             ),
             Span::raw("  "),
-            Span::styled("EOL ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(tr("plot_tx_eol", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
             Span::styled("\\n", Style::default().fg(CATPPUCCIN_MOCHA.text)),
             Span::raw("  "),
-            Span::styled("Port ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(tr("plot_port", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
             Span::styled(
                 selected_port,
                 Style::default()
@@ -1130,26 +1155,26 @@ fn draw_send_panel(f: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "type command here after TX input is wired",
+                tr("plot_tx_placeholder", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_disabled),
             ),
             Span::raw(" "),
             Span::styled(
-                "[Enter Send]",
+                tr("plot_tx_enter_send", lang),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.success)
                     .bg(mocha::SURFACE0),
             ),
             Span::raw(" "),
             Span::styled(
-                "[Up/Down History]",
+                tr("plot_tx_history_hint", lang),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.text_muted)
                     .bg(mocha::SURFACE0),
             ),
         ]),
         Line::from(vec![
-            Span::styled("Quick: ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(tr("plot_tx_quick", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
             quick_button("RESET"),
             Span::raw(" "),
             quick_button("VERSION?"),
@@ -1169,7 +1194,7 @@ fn draw_send_panel(f: &mut Frame, app: &App, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border_focus))
                 .title(Span::styled(
-                    " Send Command ",
+                    tr("plot_tx_send_title", lang),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),

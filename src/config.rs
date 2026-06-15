@@ -204,3 +204,70 @@ impl ProjectConfig {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolConfig {
+    pub language: String,
+}
+
+impl Default for ToolConfig {
+    fn default() -> Self {
+        Self {
+            language: "en".to_string(),
+        }
+    }
+}
+
+impl ToolConfig {
+    pub fn load() -> Self {
+        let path = Self::get_path();
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(config) = serde_json::from_str::<ToolConfig>(&content) {
+                return config;
+            }
+        }
+        Self::default()
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let path = Self::get_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let content = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        std::fs::write(&path, content).map_err(|e| e.to_string())
+    }
+
+    fn get_path() -> std::path::PathBuf {
+        if cfg!(test) {
+            return std::env::temp_dir().join(".piopulse_tool_settings_test.json");
+        }
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "/home/waya".to_string());
+        std::path::Path::new(&home).join(".piopulse_tool_settings.json")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tool_config_save_load() {
+        let path = ToolConfig::get_path();
+        let _ = std::fs::remove_file(&path);
+
+        let mut config = ToolConfig::load();
+        assert_eq!(config.language, "en");
+
+        config.language = "zh".to_string();
+        config.save().unwrap();
+
+        let loaded = ToolConfig::load();
+        assert_eq!(loaded.language, "zh");
+
+        let _ = std::fs::remove_file(&path);
+    }
+}
+

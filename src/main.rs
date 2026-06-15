@@ -76,8 +76,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         KeyCode::Enter => {
                                             match app.exit_menu_selected {
                                                 0 => {
-                                                    app.active_tab = ActiveTab::Configuration;
                                                     app.show_exit_menu = false;
+                                                    app.show_tool_settings = true;
+                                                    app.tool_settings_selected = if app.tool_config.language == "zh" { 1 } else { 0 };
                                                 }
                                                 1 => {
                                                     if !app.is_flashing {
@@ -89,6 +90,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 }
                                                 _ => {}
                                             }
+                                        }
+                                        _ => {}
+                                    }
+                                } else if app.show_tool_settings {
+                                    match key.code {
+                                        KeyCode::Esc => {
+                                            app.show_tool_settings = false;
+                                        }
+                                        KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                                            app.tool_settings_selected = if app.tool_settings_selected == 0 { 1 } else { 0 };
+                                        }
+                                        KeyCode::Enter => {
+                                            let new_lang = if app.tool_settings_selected == 0 { "en" } else { "zh" };
+                                            app.tool_config.language = new_lang.to_string();
+                                            if let Err(e) = app.tool_config.save() {
+                                                app.log(format!("Failed to save tool config: {}", e));
+                                            } else {
+                                                app.log("Tool configuration saved.");
+                                            }
+                                            app.show_tool_settings = false;
+                                        }
+                                        _ => {}
+                                    }
+                                } else if app.show_port_menu {
+                                    match key.code {
+                                        KeyCode::Esc => {
+                                            app.show_port_menu = false;
+                                        }
+                                        KeyCode::Up => {
+                                            let total_items = app.channels.len() + 1;
+                                            if app.port_menu_selected > 0 {
+                                                app.port_menu_selected -= 1;
+                                            } else {
+                                                app.port_menu_selected = total_items - 1;
+                                            }
+                                        }
+                                        KeyCode::Down => {
+                                            let total_items = app.channels.len() + 1;
+                                            if app.port_menu_selected < total_items - 1 {
+                                                app.port_menu_selected += 1;
+                                            } else {
+                                                app.port_menu_selected = 0;
+                                            }
+                                        }
+                                        KeyCode::Enter => {
+                                            let total_items = app.channels.len() + 1;
+                                            if app.port_menu_selected < total_items {
+                                                app.selected_channel_idx = app.port_menu_selected;
+                                                if let Some(port) = app.get_selected_port() {
+                                                    app.log(format!("Selected port switched to {}.", port));
+                                                }
+                                            }
+                                            app.show_port_menu = false;
                                         }
                                         _ => {}
                                     }
@@ -144,7 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 // Simulated interactive command responses
                                                 let response = match cmd.as_str() {
                                                     "AT" => Some("OK".to_string()),
-                                                    "AT+GMR" => Some("ESP32-D0WDQ6-V3 (IDF v4.4, PioPulse Mock v0.1.2)".to_string()),
+                                                    "AT+GMR" => Some("ESP32-D0WDQ6-V3 (IDF v4.4, PioPulse Mock v0.1.3)".to_string()),
                                                     "help" | "?" => Some("Available commands: AT, AT+GMR, RESET, help".to_string()),
                                                     "RESET" => {
                                                         app.log(format!("[{}] [RX] System restarting...", port));
@@ -174,6 +228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     // Widgets search catalog modal input handling
                                     let filtered_items = crate::ui::widgets::get_filtered_catalog_items(
                                         &app.widget_search_input,
+                                        &app.tool_config.language,
                                     );
 
                                     match key.code {

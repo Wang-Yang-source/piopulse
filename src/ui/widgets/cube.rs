@@ -57,10 +57,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         }
     };
 
+    let is_zh = app.tool_config.language == "zh";
     let title_suffix = if app.manual_imu_override {
-        " [MANUAL 🎮] "
+        if is_zh { " [手动模式 🎮] " } else { " [MANUAL 🎮] " }
     } else {
-        " [TELEMETRY ⚡] "
+        if is_zh { " [传感器遥测 ⚡] " } else { " [TELEMETRY ⚡] " }
     };
     let border_color = if is_focused {
         CATPPUCCIN_MOCHA.border_focus
@@ -84,12 +85,23 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
                 .border_style(Style::default().fg(border_color))
                 .title(Span::styled(
                     if is_focused {
-                        format!(
-                            " cube: 3D Orientation{} (T: Manual Mode, UJIKOL/Arrows: Ctrl) ",
-                            title_suffix
-                        )
+                        if is_zh {
+                            format!(
+                                " 立方体：3D 姿态{} (T: 手动模式, UJIKOL/方向键: 控制) ",
+                                title_suffix
+                            )
+                        } else {
+                            format!(
+                                " cube: 3D Orientation{} (T: Manual Mode, UJIKOL/Arrows: Ctrl) ",
+                                title_suffix
+                            )
+                        }
                     } else {
-                        format!(" cube: 3D Orientation{} ", title_suffix)
+                        if is_zh {
+                            format!(" 立方体：3D 姿态{} ", title_suffix)
+                        } else {
+                            format!(" cube: 3D Orientation{} ", title_suffix)
+                        }
                     },
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)

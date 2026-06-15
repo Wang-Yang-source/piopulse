@@ -57,7 +57,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
                 .border_type(border_type)
                 .border_style(Style::default().fg(border_color))
                 .title(Span::styled(
-                    " image: Ratatui ROI Canvas ",
+                    format!(" {} ", crate::ui::tr("widget_image_title", &app.tool_config.language)),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),

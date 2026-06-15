@@ -1,5 +1,6 @@
 use crate::app::App;
 use crate::ui::theme::{CATPPUCCIN_MOCHA, mocha};
+use crate::ui::tr;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -9,12 +10,13 @@ use ratatui::{
 };
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
+    let lang = &app.tool_config.language;
     let config_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
         .title(Span::styled(
-            " Configuration ",
+            tr("config_title", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -31,20 +33,20 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // Configuration Fields
     let cfg = &app.config;
     let fields = vec![
-        ("Project Name:", cfg.name.clone()),
-        ("Chip Type:", cfg.chip_type.clone()),
-        ("Baud Rate:", cfg.baud_rate.to_string()),
-        ("Flash Mode:", cfg.flash_mode.clone()),
-        ("Flash Freq:", cfg.flash_freq.clone()),
-        ("Flash Size:", cfg.flash_size.clone()),
-        ("Bootloader Offset:", cfg.bootloader_offset.clone()),
-        ("Bootloader Path:", cfg.bootloader_path.clone()),
-        ("Partitions Offset:", cfg.partitions_offset.clone()),
-        ("Partitions Path:", cfg.partitions_path.clone()),
-        ("OTA Data Offset:", cfg.otadata_offset.clone()),
-        ("OTA Data Path:", cfg.otadata_path.clone()),
-        ("App Offset:", cfg.app_offset.clone()),
-        ("App Path:", cfg.app_path.clone()),
+        (tr("config_proj_name", lang), cfg.name.clone()),
+        (tr("config_chip_type", lang), cfg.chip_type.clone()),
+        (tr("config_baud_rate", lang), cfg.baud_rate.to_string()),
+        (tr("config_flash_mode", lang), cfg.flash_mode.clone()),
+        (tr("config_flash_freq", lang), cfg.flash_freq.clone()),
+        (tr("config_flash_size", lang), cfg.flash_size.clone()),
+        (tr("config_bootloader_offset", lang), cfg.bootloader_offset.clone()),
+        (tr("config_bootloader_path", lang), cfg.bootloader_path.clone()),
+        (tr("config_partitions_offset", lang), cfg.partitions_offset.clone()),
+        (tr("config_partitions_path", lang), cfg.partitions_path.clone()),
+        (tr("config_otadata_offset", lang), cfg.otadata_offset.clone()),
+        (tr("config_otadata_path", lang), cfg.otadata_path.clone()),
+        (tr("config_app_offset", lang), cfg.app_offset.clone()),
+        (tr("config_app_path", lang), cfg.app_path.clone()),
     ];
 
     let mut rows = Vec::new();
@@ -114,7 +116,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::TOP)
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
         .title(Span::styled(
-            " Inspector ",
+            tr("config_inspector_title", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.accent)
                 .add_modifier(Modifier::BOLD),
@@ -127,14 +129,14 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let status_span = if app.admin_mode {
         if app.is_editing_config {
             Span::styled(
-                "EDITING",
+                tr("config_status_editing", lang),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.accent)
                     .add_modifier(Modifier::BOLD),
             )
         } else {
             Span::styled(
-                "UNLOCKED",
+                tr("config_status_unlocked", lang),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.success)
                     .add_modifier(Modifier::BOLD),
@@ -142,7 +144,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         }
     } else {
         Span::styled(
-            "LOCKED (READ-ONLY)",
+            tr("config_status_locked", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.danger)
                 .add_modifier(Modifier::BOLD),
@@ -151,7 +153,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     inspector_lines.push(Line::from(vec![
         Span::styled(
-            "  Parameter: ",
+            tr("config_parameter", lang),
             Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
         ),
         Span::styled(
@@ -161,7 +163,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "  ·  Status: ",
+            tr("config_status", lang),
             Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
         ),
         status_span,
@@ -181,7 +183,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     inspector_lines.push(Line::from(vec![
         Span::styled(
-            "  Value: ",
+            tr("config_value", lang),
             Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
         ),
         Span::styled(
@@ -196,81 +198,18 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // Line 5: Help Guide
     let guide_spans = if !app.admin_mode {
         vec![
-            Span::styled("  Guide: ", Style::default().fg(CATPPUCCIN_MOCHA.primary)),
-            Span::styled("Press ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-            Span::styled(
-                "F1",
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " to unlock. Use ",
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
-            Span::styled(
-                "Up/Down Arrows",
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " or click to select fields.",
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
+            Span::styled(tr("config_guide", lang), Style::default().fg(CATPPUCCIN_MOCHA.primary)),
+            Span::styled(tr("config_guide_locked", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
         ]
     } else if app.is_editing_config {
         vec![
-            Span::styled("  Guide: ", Style::default().fg(CATPPUCCIN_MOCHA.accent)),
-            Span::styled(
-                "Type new value. Press ",
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.success)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " to save, ",
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.danger)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " to cancel.",
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
+            Span::styled(tr("config_guide", lang), Style::default().fg(CATPPUCCIN_MOCHA.accent)),
+            Span::styled(tr("config_guide_editing", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
         ]
     } else {
         vec![
-            Span::styled("  Guide: ", Style::default().fg(CATPPUCCIN_MOCHA.success)),
-            Span::styled("Press ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " or click to edit. Press ",
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
-            Span::styled(
-                "F1",
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " to lock.",
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
+            Span::styled(tr("config_guide", lang), Style::default().fg(CATPPUCCIN_MOCHA.success)),
+            Span::styled(tr("config_guide_unlocked", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
         ]
     };
     inspector_lines.push(Line::from(guide_spans));

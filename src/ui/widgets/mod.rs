@@ -14,45 +14,33 @@ use ratatui::{
 
 pub fn get_catalog_items() -> Vec<(&'static str, &'static str, WidgetType)> {
     vec![
-        ("button", "Ratatui TUI Button Panel", WidgetType::Button),
-        ("cube", "Ratatui Canvas Orientation Cube", WidgetType::Cube),
-        (
-            "dashboard",
-            "Ratatui TUI System Dashboard",
-            WidgetType::Dashboard,
-        ),
-        ("delay", "Ratatui TUI Delayed Trigger", WidgetType::Delay),
-        ("dial", "Ratatui TUI Dial Panel", WidgetType::Dial),
-        (
-            "example",
-            "Example Rust/Ratatui Module Template",
-            WidgetType::Example,
-        ),
-        ("gauge", "Ratatui Gauge Telemetry Meter", WidgetType::Gauge),
-        (
-            "image",
-            "Ratatui Canvas Image/ROI Preview",
-            WidgetType::Image,
-        ),
-        (
-            "joystick",
-            "Ratatui Canvas Joystick Grid",
-            WidgetType::Joystick,
-        ),
-        ("knob", "Ratatui TUI Precision Knob", WidgetType::Knob),
-        ("light", "Ratatui TUI Status Lights", WidgetType::Light),
-        ("pad", "Ratatui Canvas Dual-Axis Pad", WidgetType::Pad),
-        ("ring", "Ratatui TUI Ring Dial", WidgetType::Ring),
-        ("slider", "Ratatui TUI Parameter Slider", WidgetType::Slider),
-        ("toggle", "Ratatui TUI Latched Switch", WidgetType::Toggle),
+        ("button", "widget_button_desc", WidgetType::Button),
+        ("cube", "widget_cube_desc", WidgetType::Cube),
+        ("dashboard", "widget_dashboard_desc", WidgetType::Dashboard),
+        ("delay", "widget_delay_desc", WidgetType::Delay),
+        ("dial", "widget_dial_desc", WidgetType::Dial),
+        ("example", "widget_example_desc", WidgetType::Example),
+        ("gauge", "widget_gauge_desc", WidgetType::Gauge),
+        ("image", "widget_image_desc", WidgetType::Image),
+        ("joystick", "widget_joystick_desc", WidgetType::Joystick),
+        ("knob", "widget_knob_desc", WidgetType::Knob),
+        ("light", "widget_light_desc", WidgetType::Light),
+        ("pad", "widget_pad_desc", WidgetType::Pad),
+        ("ring", "widget_ring_desc", WidgetType::Ring),
+        ("slider", "widget_slider_desc", WidgetType::Slider),
+        ("toggle", "widget_toggle_desc", WidgetType::Toggle),
     ]
 }
 
-pub fn get_filtered_catalog_items(search: &str) -> Vec<(&'static str, &'static str, WidgetType)> {
+pub fn get_filtered_catalog_items(search: &str, _lang: &str) -> Vec<(&'static str, &'static str, WidgetType)> {
     let search = search.to_lowercase();
     let mut items: Vec<_> = get_catalog_items()
         .into_iter()
-        .filter(|(name, desc, _)| name.contains(&search) || desc.to_lowercase().contains(&search))
+        .filter(|(name, desc_key, _)| {
+            name.contains(&search)
+                || crate::ui::tr(desc_key, "en").to_lowercase().contains(&search)
+                || crate::ui::tr(desc_key, "zh").contains(&search)
+        })
         .collect();
     // Keep the module catalog stable as new modules are added.
     items.sort_by_key(|(name, _, _)| *name);
@@ -98,40 +86,41 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn draw_welcome_screen(f: &mut Frame, _app: &App, area: Rect) {
+fn draw_welcome_screen(f: &mut Frame, app: &App, area: Rect) {
+    let lang = &app.tool_config.language;
     let welcome_text = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "     No modules are currently loaded in this dashboard.",
+            crate::ui::tr("dash_no_modules", lang),
             Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
         )),
         Line::from(""),
         Line::from(vec![
             Span::styled(
-                "     Press [A] ",
+                crate::ui::tr("dash_press_a", lang),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.success)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("to open the Ratatui module catalog and add items."),
+            Span::raw(crate::ui::tr("dash_open_catalog", lang)),
         ]),
         Line::from(vec![
             Span::styled(
-                "     Press [D] ",
+                crate::ui::tr("dash_press_d", lang),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.danger)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("to remove/delete the currently focused pane."),
+            Span::raw(crate::ui::tr("dash_remove_pane", lang)),
         ]),
         Line::from(vec![
             Span::styled(
-                "     Press [Tab] / Left-Right Arrows ",
+                crate::ui::tr("dash_press_tab", lang),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.primary)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("to navigate focused panes."),
+            Span::raw(crate::ui::tr("dash_navigate_panes", lang)),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -139,7 +128,7 @@ fn draw_welcome_screen(f: &mut Frame, _app: &App, area: Rect) {
             Style::default().fg(CATPPUCCIN_MOCHA.border),
         )),
         Line::from(Span::styled(
-            "     💡 Hint: Panes will auto-split horizontally & vertically!",
+            crate::ui::tr("dash_split_hint", lang),
             Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
         )),
     ];
@@ -151,7 +140,7 @@ fn draw_welcome_screen(f: &mut Frame, _app: &App, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
                 .title(Span::styled(
-                    " Tiling Workspace ",
+                    crate::ui::tr("dash_tiling_workspace", lang),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),
@@ -164,11 +153,12 @@ fn draw_welcome_screen(f: &mut Frame, _app: &App, area: Rect) {
 }
 
 fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
-    let filtered_items = get_filtered_catalog_items(&app.widget_search_input);
+    let lang = &app.tool_config.language;
+    let filtered_items = get_filtered_catalog_items(&app.widget_search_input, lang);
 
     let mut lines = Vec::new();
     lines.push(Line::from(Span::styled(
-        "Select Ratatui Module to Add to Pane",
+        crate::ui::tr("dash_select_module_title", lang),
         Style::default()
             .fg(CATPPUCCIN_MOCHA.accent)
             .add_modifier(Modifier::BOLD),
@@ -179,7 +169,7 @@ fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
     )));
     lines.push(Line::from(""));
 
-    let search_label = format!(" Search: {}█", app.widget_search_input);
+    let search_label = format!("{}{}█", crate::ui::tr("dash_search", lang), app.widget_search_input);
     lines.push(Line::from(Span::styled(
         search_label,
         Style::default().fg(CATPPUCCIN_MOCHA.text),
@@ -190,7 +180,7 @@ fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
     )));
     lines.push(Line::from(""));
 
-    for (idx, (name, desc, _)) in filtered_items.iter().enumerate() {
+    for (idx, (name, desc_key, _)) in filtered_items.iter().enumerate() {
         let is_selected = app.add_menu_selected == idx;
         let prefix = if is_selected {
             Span::styled(
@@ -209,15 +199,16 @@ fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
         } else {
             Style::default().fg(CATPPUCCIN_MOCHA.text_muted)
         };
+        let translated_desc = crate::ui::tr(desc_key, lang);
         lines.push(Line::from(vec![
             prefix,
-            Span::styled(format!("{:<18} : {}", name, desc), style),
+            Span::styled(format!("{:<18} : {}", name, translated_desc), style),
         ]));
     }
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        " Press [↑/↓] to navigate | [ENTER] to add | [ESC] to close",
+        crate::ui::tr("dash_modal_hint", lang),
         Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
     )));
 
@@ -228,7 +219,7 @@ fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
                 .border_type(BorderType::Double)
                 .border_style(Style::default().fg(CATPPUCCIN_MOCHA.accent))
                 .title(Span::styled(
-                    " Ratatui Module Catalog ",
+                    crate::ui::tr("dash_catalog_title", lang),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),
@@ -256,7 +247,7 @@ fn draw_button_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            " button: Ratatui Button Panel ",
+            format!(" {} ", crate::ui::tr("widget_button_title", &_app.tool_config.language)),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -331,7 +322,7 @@ fn draw_slider_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            " slider: Ratatui PID Parameter Panel ",
+            format!(" {} ", crate::ui::tr("widget_slider_title", &app.tool_config.language)),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -407,7 +398,7 @@ fn draw_dial_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            " dial: Ratatui Speed Dial ",
+            format!(" {} ", crate::ui::tr("widget_dial_title", &app.tool_config.language)),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -585,7 +576,7 @@ fn draw_joystick_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool)
                 .border_type(border_type)
                 .border_style(Style::default().fg(border_color))
                 .title(Span::styled(
-                    " joystick: Ratatui Canvas Grid ",
+                    format!(" {} ", crate::ui::tr("widget_joystick_title", &_app.tool_config.language)),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),
@@ -656,7 +647,7 @@ fn draw_light_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            " light: Ratatui Status Indicators ",
+            format!(" {} ", crate::ui::tr("widget_light_title", &_app.tool_config.language)),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -702,7 +693,7 @@ fn draw_gauge_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            " gauge: Ratatui Battery Gauge ",
+            format!(" {} ", crate::ui::tr("widget_gauge_title", &app.tool_config.language)),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -759,7 +750,7 @@ fn draw_dashboard_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool)
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            " dashboard: Ratatui Motor Diagnostics ",
+            format!(" {} ", crate::ui::tr("widget_dashboard_title", &app.tool_config.language)),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -847,7 +838,7 @@ fn draw_example_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) 
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            " example: Rust/Ratatui Module Template ",
+            format!(" {} ", crate::ui::tr("widget_example_title", &_app.tool_config.language)),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -906,7 +897,7 @@ fn draw_delay_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            " delay: Ratatui Delayed Trigger ",
+            format!(" {} ", crate::ui::tr("widget_delay_title", &_app.tool_config.language)),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -962,7 +953,7 @@ fn draw_toggle_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            " toggle: Ratatui Latched Switch ",
+            format!(" {} ", crate::ui::tr("widget_toggle_title", &_app.tool_config.language)),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -1014,7 +1005,7 @@ fn draw_knob_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            " knob: Ratatui Fine Dial ",
+            format!(" {} ", crate::ui::tr("widget_knob_title", &app.tool_config.language)),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -1081,7 +1072,7 @@ fn draw_ring_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            " ring: Ratatui Ring Dial ",
+            format!(" {} ", crate::ui::tr("widget_ring_title", &_app.tool_config.language)),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -1146,7 +1137,7 @@ fn draw_pad_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
                 .border_type(border_type)
                 .border_style(Style::default().fg(border_color))
                 .title(Span::styled(
-                    " pad: Ratatui Canvas Input ",
+                    format!(" {} ", crate::ui::tr("widget_pad_title", &_app.tool_config.language)),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),

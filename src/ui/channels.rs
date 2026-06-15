@@ -1,5 +1,6 @@
 use crate::app::App;
 use crate::ui::theme::{CATPPUCCIN_MOCHA, mocha};
+use crate::ui::tr;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -28,13 +29,14 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
     let centered_area = crate::ui::center_rect(65, 12, area);
+    let lang = &app.tool_config.language;
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
         .title(Span::styled(
-            " 🔋 BATCH FLASHER ENGINE ",
+            tr("flash_engine_title", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -44,7 +46,7 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
     let info_lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "   ⚠️  No active flashing devices detected.",
+            tr("flash_no_devices", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.warning)
                 .add_modifier(Modifier::BOLD),
@@ -52,7 +54,7 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::styled(
-                "   Target Chip:  ",
+                tr("flash_target_chip", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
@@ -62,7 +64,7 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "   Baud Rate:  ",
+                tr("flash_baud_rate", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
@@ -74,7 +76,7 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
-                "   Flash Mode:   ",
+                tr("flash_mode", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
@@ -82,7 +84,7 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(CATPPUCCIN_MOCHA.text),
             ),
             Span::styled(
-                "   Flash Size: ",
+                tr("flash_size", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
@@ -92,22 +94,22 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "   🔌 Connect USB devices to auto-scan and begin flashing...",
+            tr("flash_connect_usb", lang),
             Style::default().fg(CATPPUCCIN_MOCHA.text_disabled),
         )),
         Line::from(vec![
             Span::styled(
-                "   ⚡ Hint: Press ",
+                tr("flash_hint", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_disabled),
             ),
             Span::styled(
-                "Spacebar",
+                tr("flash_spacebar", lang),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.accent)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                " to manually re-scan ports.",
+                tr("flash_rescan", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_disabled),
             ),
         ]),
@@ -117,6 +119,7 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
+    let lang = &app.tool_config.language;
     let total = app.channels.len();
     let idle = app.channels.iter().filter(|c| c.status == "Idle").count();
     let flashing = app
@@ -136,35 +139,35 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
         .count();
 
     let summary_line = Line::from(vec![
-        Span::raw("  ⚡ Devices Count: "),
+        Span::raw(tr("flash_devices_count", lang)),
         Span::styled(
             total.to_string(),
             Style::default()
                 .fg(mocha::BLUE)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  |  ● Idle: "),
+        Span::raw(tr("flash_idle_count", lang)),
         Span::styled(
             idle.to_string(),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text_muted)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  |  ⟳ Flashing: "),
+        Span::raw(tr("flash_flashing_count", lang)),
         Span::styled(
             flashing.to_string(),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.warning)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  |  ✓ Success: "),
+        Span::raw(tr("flash_success_count", lang)),
         Span::styled(
             passed.to_string(),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.success)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  |  ✗ Failed: "),
+        Span::raw(tr("flash_failed_count", lang)),
         Span::styled(
             failed.to_string(),
             Style::default()
@@ -178,7 +181,7 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
         .title(Span::styled(
-            " BATCH FLASHING MONITOR DASHBOARD ",
+            tr("flash_dashboard_title", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -193,6 +196,7 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
+    let lang = &app.tool_config.language;
     let mut rows = Vec::new();
     for (idx, channel) in app.channels.iter().enumerate() {
         let is_selected = idx == app.selected_channel_idx;
@@ -207,21 +211,23 @@ fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(CATPPUCCIN_MOCHA.text)
         };
 
-        let chip_text = channel.chip.as_deref().unwrap_or("Detecting...");
+        let chip_text = channel.chip.as_deref().unwrap_or_else(|| tr("flash_detecting", lang));
         let mac_text = channel.mac.as_deref().unwrap_or("XX:XX:XX:XX:XX:XX");
 
         let (status_text, status_style) = if channel.finished {
             if channel.success {
                 (
-                    "✓ SUCCESS".to_string(),
+                    tr("flash_status_success", lang).to_string(),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.success)
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
-                let err_msg = channel.error.as_deref().unwrap_or("Unknown");
+                let err_msg = channel.error.as_deref().unwrap_or_else(|| {
+                    if lang == "zh" { "未知" } else { "Unknown" }
+                });
                 (
-                    format!("✗ FAILED ({})", err_msg),
+                    tr("flash_status_failed", lang).replace("{}", err_msg),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.danger)
                         .add_modifier(Modifier::BOLD),
@@ -229,12 +235,23 @@ fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
             }
         } else if channel.status == "Idle" {
             (
-                "● Idle".to_string(),
+                tr("flash_status_idle", lang).to_string(),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             )
         } else {
+            let status_disp = if lang == "zh" {
+                match channel.status.as_str() {
+                    "Flashing" => "烧录中",
+                    "Erasing" => "擦除中",
+                    "Verifying" => "校验中",
+                    "Connecting" => "连接中",
+                    s => s,
+                }
+            } else {
+                &channel.status
+            };
             (
-                format!("⟳ {}", channel.status),
+                format!("⟳ {}", status_disp),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.warning)
                     .add_modifier(Modifier::BOLD),
@@ -279,6 +296,19 @@ fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
         );
     }
 
+    let headers = if lang == "zh" {
+        vec!["端口", "目标芯片", "MAC 地址", "状态", "进度", "速度"]
+    } else {
+        vec![
+            "Port",
+            "Target Chip",
+            "MAC Address",
+            "Status",
+            "Progress",
+            "Speed",
+        ]
+    };
+
     let table = Table::new(
         rows,
         [
@@ -291,14 +321,7 @@ fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(
-        Row::new(vec![
-            "Port",
-            "Target Chip",
-            "MAC Address",
-            "Status",
-            "Progress",
-            "Speed",
-        ])
+        Row::new(headers.into_iter().map(Cell::from).collect::<Vec<_>>())
         .style(
             Style::default()
                 .fg(mocha::SUBTEXT1)
@@ -312,7 +335,7 @@ fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
             .title(Span::styled(
-                " Batch Flasher Devices ",
+                tr("flash_devices_title", lang),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.text)
                     .add_modifier(Modifier::BOLD),

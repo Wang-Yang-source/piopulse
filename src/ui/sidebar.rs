@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::ui::tr;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -22,12 +23,13 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
+    let lang = &app.tool_config.language;
     let stats_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
         .title(Span::styled(
-            " Production Statistics ",
+            tr("sidebar_stats_title", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -49,7 +51,7 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
     let stats_text = vec![
         Line::from(vec![
             Span::styled(
-                "Total Attempted: ",
+                tr("sidebar_total_attempted", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
@@ -61,7 +63,7 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
-                "Passed (OK):     ",
+                tr("sidebar_passed", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
@@ -73,7 +75,7 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
-                "Failed (FAIL):   ",
+                tr("sidebar_failed", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
@@ -85,7 +87,7 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
-                "Yield Rate:      ",
+                tr("sidebar_yield_rate", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
@@ -101,7 +103,7 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
-                "Elapsed Time:    ",
+                tr("sidebar_elapsed_time", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(elapsed_str, Style::default().fg(CATPPUCCIN_MOCHA.text)),
@@ -175,12 +177,13 @@ fn wrap_log_line(line: &str, max_width: usize) -> Vec<String> {
 }
 
 fn draw_serial_monitor(f: &mut Frame, app: &App, area: Rect) {
+    let lang = &app.tool_config.language;
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
         .title(Span::styled(
-            " Serial Monitor ",
+            tr("sidebar_monitor_title", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),

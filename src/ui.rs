@@ -7,10 +7,12 @@ pub mod plotter;
 pub mod serial;
 pub mod sidebar;
 pub mod theme;
+pub mod translation;
 pub mod utils;
 pub mod widgets;
 
 pub use utils::center_rect;
+pub use translation::tr;
 
 use crate::app::{ActiveTab, App};
 use ratatui::{
@@ -48,6 +50,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.layout_zones.password_modal = area;
         modal::draw(f, app, area);
     }
+
+    if app.show_tool_settings {
+        let area = center_rect(48, 11, f.size());
+        modal::draw_tool_settings(f, app, area);
+    }
+
+    if app.show_port_menu {
+        let port_count = app.channels.len() + 1;
+        let height = (port_count + 4).clamp(6, 15) as u16;
+        let area = center_rect(50, height, f.size());
+        app.layout_zones.port_menu_modal = area;
+        modal::draw_port_menu(f, app, area);
+    }
 }
 
 fn draw_main_area(f: &mut Frame, app: &mut App, area: Rect) {
@@ -74,12 +89,13 @@ fn draw_workspace(f: &mut Frame, app: &mut App, area: Rect) {
         .split(area);
 
     // Render Tabs
+    let lang = &app.tool_config.language;
     let tab_titles = vec![
-        " [1] Serial ",
-        " [2] Plot ",
-        " [3] Dash ",
-        " [4] Flash ",
-        " [5] Settings ",
+        tr("tab_serial", lang),
+        tr("tab_plot", lang),
+        tr("tab_dash", lang),
+        tr("tab_flash", lang),
+        tr("tab_settings", lang),
     ];
 
     let active_index = match app.active_tab {

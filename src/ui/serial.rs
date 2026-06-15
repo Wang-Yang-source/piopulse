@@ -1,5 +1,6 @@
 use crate::app::App;
 use crate::ui::theme::{CATPPUCCIN_MOCHA, mocha};
+use crate::ui::tr;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -30,8 +31,9 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
         .get_selected_port()
         .unwrap_or_else(|| "NONE".to_string());
 
+    let lang = &app.tool_config.language;
     // 1. Receive Console block
-    let rx_title = format!(" Serial Console Receiver [{}] ", active_port);
+    let rx_title = tr("serial_rx_title", lang).replace("{}", &active_port);
     let console_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -105,10 +107,11 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, inner_area);
 
     // 2. Input Sending block
+    let lang = &app.tool_config.language;
     let (input_border, input_title, input_title_style) = if app.serial_is_typing {
         (
             CATPPUCCIN_MOCHA.success,
-            " Typing Mode... (Press [Esc] to exit, [Enter] to send) ",
+            tr("serial_typing_mode", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.success)
                 .add_modifier(Modifier::BOLD),
@@ -116,7 +119,7 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
     } else {
         (
             CATPPUCCIN_MOCHA.border,
-            " Send Data Console (Press [i] or [Enter] to type) ",
+            tr("serial_send_console", lang),
             Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
         )
     };
@@ -130,7 +133,7 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
     let display_text = if app.serial_is_typing {
         format!("{}_", app.serial_send_buffer)
     } else if app.serial_send_buffer.is_empty() {
-        "Type command here...".to_string()
+        tr("serial_placeholder", lang).to_string()
     } else {
         app.serial_send_buffer.clone()
     };
@@ -162,6 +165,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     app.layout_zones.serial_port_info = chunks[0];
     app.layout_zones.serial_options = chunks[1];
 
+    let lang = &app.tool_config.language;
     // 1. Connection Config info
     let active_port = app
         .get_selected_port()
@@ -171,7 +175,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
         .title(Span::styled(
-            " Port Info ",
+            tr("serial_port_info", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -180,7 +184,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
 
     let info_text = vec![
         Line::from(vec![
-            Span::styled("Port: ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(tr("serial_port", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
             Span::styled(
                 active_port,
                 Style::default()
@@ -190,7 +194,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
-                "Baud [b]: ",
+                tr("serial_baud", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
@@ -199,7 +203,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("Bits: ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(tr("serial_bits", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
             Span::styled("8-N-1", Style::default().fg(CATPPUCCIN_MOCHA.text)),
         ]),
     ];
@@ -212,7 +216,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
         .title(Span::styled(
-            " Options ",
+            tr("serial_options_title", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -230,7 +234,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 format!("{} ", scroll_check),
                 Style::default().fg(CATPPUCCIN_MOCHA.accent),
             ),
-            Span::styled("Auto Scroll ", Style::default().fg(CATPPUCCIN_MOCHA.text)),
+            Span::styled(tr("serial_auto_scroll", lang), Style::default().fg(CATPPUCCIN_MOCHA.text)),
             Span::styled("[s]", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
         ]),
         Line::from(vec![
@@ -238,7 +242,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 format!("{} ", crlf_check),
                 Style::default().fg(CATPPUCCIN_MOCHA.accent),
             ),
-            Span::styled("Send Newline ", Style::default().fg(CATPPUCCIN_MOCHA.text)),
+            Span::styled(tr("serial_send_newline", lang), Style::default().fg(CATPPUCCIN_MOCHA.text)),
             Span::styled("[n]", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
         ]),
         Line::from(vec![
@@ -246,7 +250,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 format!("{} ", rx_hex),
                 Style::default().fg(CATPPUCCIN_MOCHA.accent),
             ),
-            Span::styled("Hex Display  ", Style::default().fg(CATPPUCCIN_MOCHA.text)),
+            Span::styled(tr("serial_hex_display", lang), Style::default().fg(CATPPUCCIN_MOCHA.text)),
             Span::styled("[h]", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
         ]),
         Line::from(vec![
@@ -254,7 +258,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 format!("{} ", tx_hex),
                 Style::default().fg(CATPPUCCIN_MOCHA.accent),
             ),
-            Span::styled("Hex Sending  ", Style::default().fg(CATPPUCCIN_MOCHA.text)),
+            Span::styled(tr("serial_hex_sending", lang), Style::default().fg(CATPPUCCIN_MOCHA.text)),
             Span::styled("[t]", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
         ]),
     ];
@@ -267,7 +271,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
         .title(Span::styled(
-            " Quick Commands ",
+            tr("serial_quick_commands", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -283,7 +287,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             )),
             Cell::from(Span::styled(
-                "Test Ping",
+                tr("serial_ping_desc", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             )),
         ]),
@@ -295,7 +299,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             )),
             Cell::from(Span::styled(
-                "Get Version",
+                tr("serial_version_desc", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             )),
         ]),
@@ -305,7 +309,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(mocha::RED).add_modifier(Modifier::BOLD),
             )),
             Cell::from(Span::styled(
-                "Reboot Board",
+                tr("serial_reboot_desc", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             )),
         ]),
@@ -317,7 +321,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             )),
             Cell::from(Span::styled(
-                "List Options",
+                tr("serial_list_desc", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             )),
         ]),
@@ -329,7 +333,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     )
     .block(quick_block)
     .header(
-        Row::new(vec!["Cmd", "Description"]).style(
+        Row::new(vec![tr("serial_cmd", lang), tr("serial_desc", lang)]).style(
             Style::default()
                 .bg(mocha::SURFACE0)
                 .add_modifier(Modifier::BOLD),

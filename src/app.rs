@@ -1,4 +1,4 @@
-use crate::config::ProjectConfig;
+use crate::config::{ProjectConfig, ToolConfig};
 use crate::worker::{self, WorkerMessage};
 use ratatui::layout::Rect;
 use std::sync::Arc;
@@ -15,6 +15,7 @@ pub struct LayoutZones {
     pub serial_port_info: Rect,
     pub serial_options: Rect,
     pub plotter_port_selector: Rect,
+    pub port_menu_modal: Rect,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +107,11 @@ pub struct App {
     pub logs: Vec<String>,
     pub config: ProjectConfig,
     pub config_path: String,
+    pub tool_config: ToolConfig,
+    pub show_tool_settings: bool,
+    pub tool_settings_selected: usize,
+    pub show_port_menu: bool,
+    pub port_menu_selected: usize,
 
     // UI state
     pub active_tab: ActiveTab,
@@ -197,6 +203,9 @@ impl App {
             vec![vec![0.0, 2.5, 0.0, 0.0, 0.35, 0.0]],
         );
 
+        let tool_config = ToolConfig::load();
+        let tool_settings_selected = if tool_config.language == "zh" { 1 } else { 0 };
+
         let mut app = Self {
             channels: Vec::new(),
             stats: Stats {
@@ -207,6 +216,11 @@ impl App {
             logs: Vec::new(),
             config,
             config_path,
+            tool_config,
+            show_tool_settings: false,
+            tool_settings_selected,
+            show_port_menu: false,
+            port_menu_selected: 0,
             active_tab: ActiveTab::Serial,
             selected_channel_idx: 0,
             selected_config_field: 0,
@@ -592,6 +606,23 @@ impl App {
         row: u16,
         _tx: tokio::sync::mpsc::Sender<WorkerMessage>,
     ) -> bool {
+        if self.show_port_menu {
+            if !self.is_inside_rect(col, row, self.layout_zones.port_menu_modal) {
+                self.show_port_menu = false;
+            } else {
+                let relative_row = row.saturating_sub(self.layout_zones.port_menu_modal.y + 1) as usize;
+                let total_items = self.channels.len() + 1;
+                if relative_row < total_items {
+                    self.selected_channel_idx = relative_row;
+                    if let Some(port) = self.get_selected_port() {
+                        self.log(format!("Selected port switched to {}.", port));
+                    }
+                    self.show_port_menu = false;
+                }
+            }
+            return true;
+        }
+
         if self.show_exit_menu {
             if !self.is_inside_rect(col, row, self.layout_zones.exit_menu_modal) {
                 self.show_exit_menu = false;
@@ -768,7 +799,10 @@ impl App {
 
             if self.is_inside_rect(col, row, self.layout_zones.serial_port_info) {
                 let click_row = row.saturating_sub(self.layout_zones.serial_port_info.y + 1);
-                if click_row == 1 {
+                if click_row == 0 {
+                    self.show_port_menu = true;
+                    self.port_menu_selected = self.selected_channel_idx;
+                } else if click_row == 1 {
                     self.serial_baud_rate = match self.serial_baud_rate {
                         9600 => 115200,
                         115200 => 921600,
@@ -903,5 +937,71 @@ fn verify_sudo_password(password: &str) -> bool {
     match child.wait() {
         Ok(status) => status.success(),
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_port_menu_toggle_and_select() {
+        // Use a temporary path or mock path
+        let mut app = App::new("test_project_config.json".to_string());
+        
+        // Initially false
+        assert!(!app.show_port_menu);
+        assert_eq!(app.port_menu_selected, 0);
+
+        // Configure layout zones for test
+        app.layout_zones.serial_port_info = ratatui::layout::Rect::new(10, 5, 20, 3);
+        app.layout_zones.port_menu_modal = ratatui::layout::Rect::new(30, 10, 40, 6);
+
+        // Create a mock channel
+        app.channels = vec![
+            Channel {
+                port: "COM3".to_string(),
+                chip: None,
+                mac: None,
+                status: "Idle".to_string(),
+                progress: 0,
+                speed: "115200".to_string(),
+                error: None,
+                finished: false,
+                success: false,
+                vid: None,
+                pid: None,
+                usb_product: None,
+                usb_manufacturer: None,
+            }
+        ];
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+
+        // Click on row 0 of serial_port_info (y + 1 = 6)
+        let handled = app.handle_mouse_click(12, 6, tx.clone());
+        assert!(handled);
+        assert!(app.show_port_menu);
+        assert_eq!(app.port_menu_selected, app.selected_channel_idx);
+
+        // Click outside port_menu_modal should close it
+        let handled_outside = app.handle_mouse_click(0, 0, tx.clone());
+        assert!(handled_outside);
+        assert!(!app.show_port_menu);
+
+        // Open it again
+        let handled = app.handle_mouse_click(12, 6, tx.clone());
+        assert!(handled);
+        assert!(app.show_port_menu);
+
+        // Click inside port_menu_modal on the second item ("SIMULATED", which is index 1, y + 1 + 1 = 12)
+        let handled_inside = app.handle_mouse_click(32, 12, tx.clone());
+        assert!(handled_inside);
+        assert!(!app.show_port_menu);
+        assert_eq!(app.selected_channel_idx, 1);
+        assert_eq!(app.get_selected_port().unwrap(), "SIMULATED");
+        
+        // Clean up mock file if created
+        let _ = std::fs::remove_file("test_project_config.json");
     }
 }

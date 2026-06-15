@@ -18,22 +18,23 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border));
 
     let title = Span::styled(
-        " ☕ PIOPULSE FLASHER v0.1.2 ",
+        " ☕ PIOPULSE FLASHER v0.1.3 ",
         Style::default()
             .fg(CATPPUCCIN_MOCHA.accent)
             .add_modifier(Modifier::BOLD),
     );
 
+    let lang = &app.tool_config.language;
     let mode_span = if app.admin_mode {
         Span::styled(
-            " [ADMIN MODE] ",
+            crate::ui::tr("admin_mode_header", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.danger)
                 .add_modifier(Modifier::BOLD),
         )
     } else {
         Span::styled(
-            " [OPERATOR MODE] ",
+            crate::ui::tr("operator_mode_header", lang),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.success)
                 .add_modifier(Modifier::BOLD),
