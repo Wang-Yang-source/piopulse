@@ -104,6 +104,17 @@ jobs:
             Write-Host "CHOCO_API_KEY secret is not set, skipping Chocolatey publishing."
           }
 
+      - name: Publish to crates.io
+        if: matrix.platform.target == 'x86_64-unknown-linux-gnu'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -n "$CARGO_REGISTRY_TOKEN" ]; then
+            cargo publish --token $CARGO_REGISTRY_TOKEN
+          else
+            echo "CARGO_REGISTRY_TOKEN is not set, skipping crates.io publishing."
+          fi
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:

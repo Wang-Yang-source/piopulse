@@ -363,21 +363,19 @@ impl App {
         self.update_elapsed_time();
 
         if self.simulation_active {
-            // Generate continuous waveforms based on SystemTime
             let elapsed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs_f32();
 
-            // Generate 6 channels representing rotations and translations
-            let val1 = (elapsed * 1.2).sin() * 3.0; // Pitch
-            let val2 = (elapsed * 1.8).cos() * 2.5; // Roll
-            let val3 = (elapsed * 0.8).sin() * 4.0; // Yaw
-            let val4 = (elapsed * 2.2).sin() * 0.45; // Translate X
-            let val5 = (elapsed * 1.6).cos() * 0.35; // Translate Y
-            let val6 = (elapsed * 1.1).sin() * 0.25; // Translate Z
-
-            let frame = vec![val1, val2, val3, val4, val5, val6];
+            let frame = vec![
+                (elapsed * 1.2).sin() * 3.0,
+                (elapsed * 1.8).cos() * 2.5,
+                (elapsed * 0.8).sin() * 4.0,
+                (elapsed * 2.2).sin() * 0.45,
+                (elapsed * 1.6).cos() * 0.35,
+                (elapsed * 1.1).sin() * 0.25,
+            ];
             let history = self
                 .waveform_history
                 .entry("SIMULATED".to_string())
@@ -436,11 +434,9 @@ impl App {
         let sim_idx = self.channels.len();
         if self.selected_channel_idx == sim_idx || self.channels.is_empty() {
             Some("SIMULATED".to_string())
-        } else if !self.channels.is_empty() {
+        } else {
             let idx = self.selected_channel_idx.min(self.channels.len() - 1);
             Some(self.channels[idx].port.clone())
-        } else {
-            None
         }
     }
 
@@ -752,7 +748,10 @@ impl App {
 
         if self.active_tab == ActiveTab::Widgets {
             if self.is_inside_rect(col, row, self.layout_zones.monitor_panel) {
-                let pane_layouts = crate::ui::widgets::get_pane_layouts(self.layout_zones.monitor_panel, self.dashboard_widgets.len());
+                let pane_layouts = crate::ui::widgets::get_pane_layouts(
+                    self.layout_zones.monitor_panel,
+                    self.dashboard_widgets.len(),
+                );
                 for (idx, &pane) in pane_layouts.iter().enumerate() {
                     if self.is_inside_rect(col, row, pane) {
                         self.selected_widget_idx = idx;

@@ -97,7 +97,7 @@ pub fn draw_exit_menu(f: &mut Frame, app: &App, area: Rect) {
 
     // 1. Title
     let title = Paragraph::new(Line::from(vec![
-        Span::styled("⚠️  ", Style::default()),
+        Span::styled("[!] ", Style::default()),
         Span::styled(
             "EXIT CONFIRMATION",
             Style::default()
@@ -141,7 +141,7 @@ pub fn draw_exit_menu(f: &mut Frame, app: &App, area: Rect) {
         } else {
             Style::default().bg(mocha::MANTLE)
         });
-    let settings_text = Paragraph::new("⚙️ Settings")
+    let settings_text = Paragraph::new("Settings")
         .alignment(Alignment::Center)
         .block(settings_block)
         .style(if is_settings_selected {
@@ -173,7 +173,7 @@ pub fn draw_exit_menu(f: &mut Frame, app: &App, area: Rect) {
         } else {
             Style::default().bg(mocha::MANTLE)
         });
-    let quit_text = Paragraph::new("⛔ Quit App")
+    let quit_text = Paragraph::new("Quit App")
         .alignment(Alignment::Center)
         .block(quit_block)
         .style(if is_quit_selected {

@@ -52,7 +52,7 @@ fn draw_header_bar(f: &mut Frame, app: &App, area: Rect) {
     let lines = vec![
         Line::from(vec![
             Span::styled(
-                " SERIAL DEBUGGER ",
+                " WAVEFORM PLOTTER ",
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.text)
                     .bg(mocha::SURFACE1)
@@ -669,7 +669,7 @@ fn draw_connection_rail(f: &mut Frame, app: &App, area: Rect) {
 fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
     let selected_port = app
         .get_selected_port()
-        .unwrap_or_else(|| "SIMULATED".to_string());
+        .unwrap_or_else(|| "NONE".to_string());
     let mut console_lines = Vec::new();
 
     console_lines.push(Line::from(vec![
@@ -703,7 +703,7 @@ fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
     let visible_logs: Vec<&String> = app.logs.iter().rev().take(10).collect();
     if visible_logs.is_empty() {
         console_lines.push(Line::from(Span::styled(
-            "No serial data yet. Select a port and start streaming, or keep SIMULATED active for preview data.",
+            "No serial data yet. Select a port and start streaming.",
             Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
         )));
     } else {
@@ -1038,16 +1038,13 @@ fn draw_telemetry_stats(f: &mut Frame, app: &App, area: Rect) {
 fn draw_send_panel(f: &mut Frame, app: &App, area: Rect) {
     let selected_port = app
         .get_selected_port()
-        .unwrap_or_else(|| "SIMULATED".to_string());
-    let tx_state = if app.simulation_active {
-        "Ready"
-    } else {
-        "Paused"
-    };
-    let tx_color = if app.simulation_active {
+        .unwrap_or_else(|| "NONE".to_string());
+    let has_port = app.get_selected_port().is_some();
+    let tx_state = if has_port { "Ready" } else { "Inactive" };
+    let tx_color = if has_port {
         CATPPUCCIN_MOCHA.success
     } else {
-        CATPPUCCIN_MOCHA.warning
+        CATPPUCCIN_MOCHA.text_muted
     };
 
     let lines = vec![

@@ -10,7 +10,7 @@ use ratatui::{
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let space_hint = match app.active_tab {
-        crate::app::ActiveTab::Plotter => "Start/Pause",
+        crate::app::ActiveTab::Plotter => "N/A",
         crate::app::ActiveTab::Serial => "Type Space",
         crate::app::ActiveTab::Flasher => "Start Flash",
         crate::app::ActiveTab::Configuration => "Start Flash",

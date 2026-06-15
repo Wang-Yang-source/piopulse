@@ -18,7 +18,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border));
 
     let title = Span::styled(
-        " ☕ PIOPULSE FLASHER v0.1.1 ",
+        " ☕ PIOPULSE FLASHER v0.1.2 ",
         Style::default()
             .fg(CATPPUCCIN_MOCHA.accent)
             .add_modifier(Modifier::BOLD),

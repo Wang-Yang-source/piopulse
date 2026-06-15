@@ -144,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 // Simulated interactive command responses
                                                 let response = match cmd.as_str() {
                                                     "AT" => Some("OK".to_string()),
-                                                    "AT+GMR" => Some("ESP32-D0WDQ6-V3 (IDF v4.4, PioPulse Mock v0.1.1)".to_string()),
+                                                    "AT+GMR" => Some("ESP32-D0WDQ6-V3 (IDF v4.4, PioPulse Mock v0.1.2)".to_string()),
                                                     "help" | "?" => Some("Available commands: AT, AT+GMR, RESET, help".to_string()),
                                                     "RESET" => {
                                                         app.log(format!("[{}] [RX] System restarting...", port));
@@ -331,9 +331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
                                         KeyCode::Char('s') | KeyCode::Char('S') => {
-                                            if app.active_tab == ActiveTab::Plotter {
-                                                app.simulation_active = !app.simulation_active;
-                                            } else if app.active_tab == ActiveTab::Serial {
+                                            if app.active_tab == ActiveTab::Serial {
                                                 app.serial_auto_scroll = !app.serial_auto_scroll;
                                                 app.log(format!("Auto Scroll: {}", if app.serial_auto_scroll { "ENABLED" } else { "DISABLED" }));
                                             }
@@ -484,9 +482,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             app.log(format!("Sidebar visibility: {}", if app.show_sidebar { "SHOWN" } else { "HIDDEN" }));
                                         }
                                         KeyCode::Char(' ') => {
-                                            if app.active_tab == ActiveTab::Plotter {
-                                                app.simulation_active = !app.simulation_active;
-                                            } else if app.active_tab == ActiveTab::Flasher || app.active_tab == ActiveTab::Configuration {
+                                            if app.active_tab == ActiveTab::Flasher || app.active_tab == ActiveTab::Configuration {
                                                 app.start_flashing(tx.clone());
                                             } else if app.active_tab == ActiveTab::Serial {
                                                 app.serial_is_typing = true;

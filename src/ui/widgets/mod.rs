@@ -1049,7 +1049,10 @@ fn draw_knob_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
     ]));
     lines.push(Line::from(vec![
         Span::raw("  Scale Value:     "),
-        Span::styled(format!("{:.2} units", value), Style::default().fg(CATPPUCCIN_MOCHA.primary)),
+        Span::styled(
+            format!("{:.2} units", value),
+            Style::default().fg(CATPPUCCIN_MOCHA.primary),
+        ),
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
