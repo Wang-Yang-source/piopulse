@@ -46,14 +46,118 @@ impl ProjectConfig {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let mut file = File::open(path).map_err(|e| e.to_string())?;
         let mut contents = String::new();
-        file.read_to_string(&mut contents).map_err(|e| e.to_string())?;
+        file.read_to_string(&mut contents)
+            .map_err(|e| e.to_string())?;
         serde_json::from_str(&contents).map_err(|e| e.to_string())
     }
 
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
         let contents = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         let mut file = File::create(path).map_err(|e| e.to_string())?;
-        file.write_all(contents.as_bytes()).map_err(|e| e.to_string())
+        file.write_all(contents.as_bytes())
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn detect_platformio_config() -> Option<Self> {
+        let current_dir = std::env::current_dir().ok()?;
+        let pio_ini_path = current_dir.join("platformio.ini");
+        if !pio_ini_path.exists() {
+            return None;
+        }
+
+        let content = std::fs::read_to_string(&pio_ini_path).ok()?;
+
+        let mut env_name = None;
+        let mut upload_speed = None;
+        let mut board = None;
+
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with(';') || line.starts_with('#') {
+                continue;
+            }
+            if line.starts_with('[') && line.ends_with(']') {
+                let sec = &line[1..line.len() - 1];
+                if sec.starts_with("env:") {
+                    env_name = Some(sec["env:".len()..].to_string());
+                }
+            } else if let Some(idx) = line.find('=') {
+                let key = line[..idx].trim().to_lowercase();
+                let val = line[idx + 1..].trim();
+                if key == "upload_speed" {
+                    upload_speed = Some(val.to_string());
+                } else if key == "board" {
+                    board = Some(val.to_string());
+                }
+            }
+        }
+
+        let env_name = env_name?;
+        let board = board.unwrap_or_default();
+
+        let chip_type = if board.contains("esp32s3") {
+            "ESP32-S3".to_string()
+        } else if board.contains("esp32c3") {
+            "ESP32-C3".to_string()
+        } else if board.contains("esp32c6") {
+            "ESP32-C6".to_string()
+        } else if board.contains("esp32s2") {
+            "ESP32-S2".to_string()
+        } else {
+            "Auto".to_string()
+        };
+
+        let baud_rate = upload_speed
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(921600);
+
+        let build_dir = current_dir.join(".pio").join("build").join(&env_name);
+
+        let bootloader_path = build_dir
+            .join("bootloader.bin")
+            .to_string_lossy()
+            .to_string();
+        let partitions_path = build_dir
+            .join("partitions.bin")
+            .to_string_lossy()
+            .to_string();
+        let app_path = build_dir.join("firmware.bin").to_string_lossy().to_string();
+
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "/home/waya".to_string());
+        let otadata_path = std::path::PathBuf::from(&home)
+            .join(".platformio")
+            .join("packages")
+            .join("framework-arduinoespressif32")
+            .join("tools")
+            .join("partitions")
+            .join("boot_app0.bin")
+            .to_string_lossy()
+            .to_string();
+
+        let folder_name = current_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("PlatformIO Project")
+            .to_string();
+
+        Some(ProjectConfig {
+            name: folder_name,
+            bootloader_path,
+            bootloader_offset: "0x0000".to_string(),
+            partitions_path,
+            partitions_offset: "0x8000".to_string(),
+            otadata_path,
+            otadata_offset: "0xe000".to_string(),
+            app_path,
+            app_offset: "0x10000".to_string(),
+            baud_rate,
+            chip_type,
+            flash_mode: "dio".to_string(),
+            flash_freq: "80m".to_string(),
+            flash_size: "16MB".to_string(),
+        })
     }
 
     pub fn get_field(&self, index: usize) -> String {

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Do not remove this test for UTF-8: if “Ω” doesn’t appear as “Ω”, then UTF-8 isn't being used for this XML parameter. -->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>piopulse</id>
+    <version>0.1.1</version>
+    <title>PioPulse Flasher</title>
+    <authors>Wang Yang</authors>
+    <owners>Wang-Yang-source</owners>
+    <licenseUrl>https://github.com/Wang-Yang-source/piopulse/blob/master/LICENSE</licenseUrl>
+    <projectUrl>https://github.com/Wang-Yang-source/piopulse</projectUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>A terminal user interface (TUI) factory flashing tool designed for high-concurrency ESP32 chip flashing on production lines.</description>
+    <summary>PioPulse high-concurrency ESP32 factory flasher TUI.</summary>
+    <releaseNotes>https://github.com/Wang-Yang-source/piopulse/releases</releaseNotes>
+    <copyright>Copyright 2026 Wang Yang</copyright>
+    <tags>esp32 flashing tui production-line development</tags>
+    <projectSourceUrl>https://github.com/Wang-Yang-source/piopulse</projectSourceUrl>
+    <packageSourceUrl>https://github.com/Wang-Yang-source/piopulse/tree/master/packaging/choco</packageSourceUrl>
+    <bugTrackerUrl>https://github.com/Wang-Yang-source/piopulse/issues</bugTrackerUrl>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>
