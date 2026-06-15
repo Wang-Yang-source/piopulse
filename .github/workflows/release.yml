@@ -80,6 +80,30 @@ jobs:
             shasum -a 256 ${{ matrix.platform.archive_name }} > ${{ matrix.platform.archive_name }}.sha256
           fi
 
+      - name: Publish to Chocolatey
+        if: matrix.platform.os == 'windows-latest'
+        env:
+          CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+        shell: pwsh
+        run: |
+          if ($env:CHOCO_API_KEY) {
+            $version = "${{ github.ref_name }}".SubString(1) # strip 'v'
+            $sha = (Get-Content ${{ matrix.platform.archive_name }}.sha256).Split(" ")[0]
+            
+            # Update versions & checksums in templates
+            (Get-Content packaging\choco\piopulse.nuspec) -replace '0.1.1', "$version" | Set-Content packaging\choco\piopulse.nuspec
+            (Get-Content packaging\choco\tools\chocolateyinstall.ps1) `
+              -replace 'v0.1.1', "${{ github.ref_name }}" `
+              -replace 'INSERT_WINDOWS_X86_64_SHA256_HERE', "$sha" | Set-Content packaging\choco\tools\chocolateyinstall.ps1
+              
+            cd packaging\choco
+            choco pack
+            choco apikey --key $env:CHOCO_API_KEY --source https://push.chocolatey.org/
+            choco push (Get-Item *.nupkg).FullName --source https://push.chocolatey.org/
+          } else {
+            Write-Host "CHOCO_API_KEY secret is not set, skipping Chocolatey publishing."
+          }
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -92,9 +116,17 @@ jobs:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.get_version.outputs.version }}
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
+
+      - name: Get clean version
+        id: get_version
+        run: |
+          VERSION=${{ github.ref_name }}
+          echo "version=${VERSION#v}" >> $GITHUB_OUTPUT
 
       - name: Download Build Artifacts
         uses: actions/download-artifact@v4
@@ -117,3 +149,104 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    name: Publish to Package Managers
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish to Homebrew & Scoop
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -n "$GH_PAT" ]; then
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            
+            VERSION=${{ needs.release.outputs.release_version }}
+            
+            # Read SHA256 checksums
+            SHA_MAC_ARM=$(cat artifacts/piopulse-macos-aarch64.tar.gz.sha256 | awk '{print $1}')
+            SHA_MAC_X64=$(cat artifacts/piopulse-macos-x86_64.tar.gz.sha256 | awk '{print $1}')
+            SHA_LINUX_X64=$(cat artifacts/piopulse-linux-x86_64.tar.gz.sha256 | awk '{print $1}')
+            SHA_WIN_X64=$(cat artifacts/piopulse-windows-x86_64.zip.sha256 | awk '{print $1}')
+            
+            # 1. Update Homebrew tap
+            git clone https://x-access-token:${GH_PAT}@github.com/${{ github.repository_owner }}/homebrew-tap.git
+            cd homebrew-tap
+            mkdir -p Formula
+            cat ../packaging/brew/piopulse.rb | \
+              sed "s/version \"0.1.1\"/version \"${VERSION}\"/g" | \
+              sed "s/INSERT_MACOS_AARCH64_SHA256_HERE/${SHA_MAC_ARM}/g" | \
+              sed "s/INSERT_MACOS_X86_64_SHA256_HERE/${SHA_MAC_X64}/g" | \
+              sed "s/INSERT_LINUX_X86_64_SHA256_HERE/${SHA_LINUX_X64}/g" > Formula/piopulse.rb
+            git add Formula/piopulse.rb
+            git commit -m "bump: piopulse to v${VERSION}" || true
+            git push origin master || true
+            cd ..
+            
+            # 2. Update Scoop bucket
+            git clone https://x-access-token:${GH_PAT}@github.com/${{ github.repository_owner }}/scoop-bucket.git
+            cd scoop-bucket
+            cat ../packaging/scoop/piopulse.json | \
+              sed "s/\"version\": \"0.1.1\"/\"version\": \"${VERSION}\"/g" | \
+              sed "s/releases\/download\/v0.1.1/releases\/download\/${{ github.ref_name }}/g" | \
+              sed "s/INSERT_WINDOWS_X86_64_SHA256_HERE/${SHA_WIN_X64}/g" > piopulse.json
+            git add piopulse.json
+            git commit -m "bump: piopulse to v${VERSION}" || true
+            git push origin master || true
+            cd ..
+          else
+            echo "GH_PAT secret is not set, skipping Homebrew and Scoop publishing."
+          fi
+
+      - name: Publish to AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -n "$AUR_SSH_PRIVATE_KEY" ]; then
+            VERSION=${{ needs.release.outputs.release_version }}
+            SHA_LINUX_X64=$(cat artifacts/piopulse-linux-x86_64.tar.gz.sha256 | awk '{print $1}')
+            
+            mkdir -p ~/.ssh
+            echo "${AUR_SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+            
+            git clone ssh://aur@aur.archlinux.org/piopulse-bin.git
+            cd piopulse-bin
+            
+            cat ../packaging/aur/PKGBUILD | \
+              sed "s/pkgver=0.1.1/pkgver=${VERSION}/g" | \
+              sed "s/INSERT_LINUX_X86_64_SHA256_HERE/${SHA_LINUX_X64}/g" > PKGBUILD
+              
+            # Generate AUR SRCINFO
+            docker run --rm -v "$PWD:/pkg" -w /pkg archlinux bash -c "pacman -Sy --noconfirm base-devel && sudo -u nobody makepkg --printsrcinfo > .SRCINFO" || \
+            echo "Failed to generate .SRCINFO via docker, updating PKGBUILD directly. Please verify .SRCINFO on next local run."
+            
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            git add PKGBUILD .SRCINFO
+            git commit -m "bump: release v${VERSION}" || true
+            git push origin master || true
+          else
+            echo "AUR_SSH_PRIVATE_KEY secret is not set, skipping AUR publishing."
+          fi
+
+      - name: Publish to WinGet
+        uses: vedantmgoyal9/winget-releaser@v2
+        if: env.GH_PAT != ''
+        with:
+          identifier: Wang-Yang.PioPulse
+          version: ${{ needs.release.outputs.release_version }}
+          release-tag: ${{ github.ref_name }}
+          git-token: ${{ secrets.GH_PAT }}
