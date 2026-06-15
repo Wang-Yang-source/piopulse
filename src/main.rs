@@ -331,7 +331,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
                                         KeyCode::Char('s') | KeyCode::Char('S') => {
-                                            if app.active_tab == ActiveTab::Serial {
+                                            if app.active_tab == ActiveTab::Plotter {
+                                                app.set_simulation_active(!app.simulation_active);
+                                                app.log(format!("Simulated waveform source: {}", if app.simulation_active { "ON" } else { "OFF" }));
+                                            } else if app.active_tab == ActiveTab::Serial {
                                                 app.serial_auto_scroll = !app.serial_auto_scroll;
                                                 app.log(format!("Auto Scroll: {}", if app.serial_auto_scroll { "ENABLED" } else { "DISABLED" }));
                                             }
@@ -482,7 +485,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             app.log(format!("Sidebar visibility: {}", if app.show_sidebar { "SHOWN" } else { "HIDDEN" }));
                                         }
                                         KeyCode::Char(' ') => {
-                                            if app.active_tab == ActiveTab::Flasher || app.active_tab == ActiveTab::Configuration {
+                                            if app.active_tab == ActiveTab::Plotter {
+                                                app.set_simulation_active(!app.simulation_active);
+                                                app.log(format!("Simulated waveform source: {}", if app.simulation_active { "ON" } else { "OFF" }));
+                                            } else if app.active_tab == ActiveTab::Flasher || app.active_tab == ActiveTab::Configuration {
                                                 app.start_flashing(tx.clone());
                                             } else if app.active_tab == ActiveTab::Serial {
                                                 app.serial_is_typing = true;

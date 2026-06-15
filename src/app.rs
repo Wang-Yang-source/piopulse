@@ -14,6 +14,7 @@ pub struct LayoutZones {
     pub exit_menu_modal: Rect,
     pub serial_port_info: Rect,
     pub serial_options: Rect,
+    pub plotter_port_selector: Rect,
 }
 
 #[derive(Debug, Clone)]
@@ -190,6 +191,12 @@ impl App {
             })
         };
 
+        let mut waveform_history = std::collections::HashMap::new();
+        waveform_history.insert(
+            "SIMULATED".to_string(),
+            vec![vec![0.0, 2.5, 0.0, 0.0, 0.35, 0.0]],
+        );
+
         let mut app = Self {
             channels: Vec::new(),
             stats: Stats {
@@ -216,7 +223,7 @@ impl App {
             elapsed_time: Duration::from_secs(0),
             last_port_scan: Instant::now() - Duration::from_secs(10), // force scan on startup
             layout_zones: LayoutZones::default(),
-            waveform_history: std::collections::HashMap::new(),
+            waveform_history,
             simulation_active: true,
             vofa_mode: crate::vofa::VofaMode::FireWater,
             plotter_mode: PlotterMode::Waveform,
@@ -572,6 +579,13 @@ impl App {
         self.log("Admin Mode locked. Switched to Operator Mode.");
     }
 
+    pub fn set_simulation_active(&mut self, active: bool) {
+        self.simulation_active = active;
+        if !active {
+            self.waveform_history.remove("SIMULATED");
+        }
+    }
+
     pub fn handle_mouse_click(
         &mut self,
         col: u16,
@@ -675,6 +689,27 @@ impl App {
                 }
                 return true;
             }
+        }
+
+        if self.active_tab == ActiveTab::Plotter
+            && self.is_inside_rect(col, row, self.layout_zones.plotter_port_selector)
+        {
+            let relative_row = row.saturating_sub(self.layout_zones.plotter_port_selector.y + 1);
+            let port_count = self.channels.len() + 1;
+            if relative_row < port_count as u16 {
+                let idx = relative_row as usize;
+                if idx < self.channels.len() {
+                    self.selected_channel_idx = idx;
+                } else {
+                    self.selected_channel_idx = self.channels.len();
+                    self.set_simulation_active(!self.simulation_active);
+                    self.log(format!(
+                        "Simulated waveform source: {}",
+                        if self.simulation_active { "ON" } else { "OFF" }
+                    ));
+                }
+            }
+            return true;
         }
 
         // 3. Serial Settings & Toggles Check

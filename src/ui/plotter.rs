@@ -12,7 +12,7 @@ use ratatui::{
     },
 };
 
-pub fn draw(f: &mut Frame, app: &App, area: Rect) {
+pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -116,7 +116,22 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
             draw_receive_console(f, app, area);
         }
         _ => {
-            let selected_port = app.get_selected_port();
+            let requested_port = app.get_selected_port();
+            let requested_has_points = requested_port
+                .as_ref()
+                .and_then(|port| app.waveform_history.get(port))
+                .is_some_and(|points| !points.is_empty());
+            let simulated_has_points = app
+                .waveform_history
+                .get("SIMULATED")
+                .is_some_and(|points| !points.is_empty());
+            let selected_port = if requested_has_points {
+                requested_port
+            } else if simulated_has_points {
+                Some("SIMULATED".to_string())
+            } else {
+                requested_port
+            };
             let history = selected_port
                 .as_ref()
                 .and_then(|port| app.waveform_history.get(port));
@@ -651,7 +666,7 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn draw_connection_rail(f: &mut Frame, app: &App, area: Rect) {
+fn draw_connection_rail(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -661,6 +676,7 @@ fn draw_connection_rail(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
+    app.layout_zones.plotter_port_selector = chunks[0];
     draw_port_selector(f, app, chunks[0]);
     draw_serial_profile(f, app, chunks[1]);
     draw_telemetry_stats(f, app, chunks[2]);
@@ -778,6 +794,20 @@ fn draw_port_selector(f: &mut Frame, app: &App, area: Rect) {
         for port in &ports {
             let is_selected = port == &active_port;
             let line = if is_selected {
+                let status = if port == "SIMULATED" {
+                    if app.simulation_active {
+                        "  SIM ON"
+                    } else {
+                        "  SIM OFF"
+                    }
+                } else {
+                    "  ACTIVE"
+                };
+                let status_color = if port == "SIMULATED" && !app.simulation_active {
+                    CATPPUCCIN_MOCHA.warning
+                } else {
+                    CATPPUCCIN_MOCHA.success
+                };
                 Line::from(vec![
                     Span::styled(
                         "> ",
@@ -791,12 +821,22 @@ fn draw_port_selector(f: &mut Frame, app: &App, area: Rect) {
                             .fg(CATPPUCCIN_MOCHA.text)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("  ACTIVE", Style::default().fg(CATPPUCCIN_MOCHA.success)),
+                    Span::styled(status, Style::default().fg(status_color)),
                 ])
             } else {
+                let suffix = if port == "SIMULATED" {
+                    if app.simulation_active {
+                        "  SIM ON"
+                    } else {
+                        "  SIM OFF"
+                    }
+                } else {
+                    ""
+                };
                 Line::from(vec![
                     Span::styled("  ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
                     Span::styled(port, Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+                    Span::styled(suffix, Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
                 ])
             };
             port_lines.push(line);
