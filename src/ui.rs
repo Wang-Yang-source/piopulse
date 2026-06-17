@@ -68,7 +68,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_main_area(f: &mut Frame, app: &mut App, area: Rect) {
-    if app.active_tab == ActiveTab::Flasher && app.show_sidebar {
+    let can_show_sidebar = area.width >= 110 && area.height >= 22;
+    if app.active_tab == ActiveTab::Flasher && app.show_sidebar && can_show_sidebar {
         // Horizontal split: Left Workspace (70%), Right Panel (30%)
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
