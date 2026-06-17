@@ -4,6 +4,15 @@ use ratatui::layout::Rect;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone, Copy)]
+pub enum SoundEffect {
+    Boot,
+    Success,
+    Failure,
+    Connect,
+    Disconnect,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LayoutZones {
     pub header: Rect,
@@ -599,7 +608,7 @@ impl App {
             if ticks > 1 {
                 self.splash_ticks_remaining = Some(ticks - 1);
             } else {
-                self.splash_ticks_remaining = None;
+                self.finish_splash();
             }
         }
         if let Some(ticks) = self.flash_success_ticks_remaining {
@@ -613,6 +622,129 @@ impl App {
         self.update_serial_monitoring();
         self.update_serial_playback();
         self.update_serial_notice();
+    }
+
+    pub fn finish_splash(&mut self) {
+        if self.splash_ticks_remaining.is_some() {
+            self.splash_ticks_remaining = None;
+            self.play_sound(SoundEffect::Boot);
+        }
+    }
+
+    pub fn play_sound(&self, effect: SoundEffect) {
+        std::thread::spawn(move || {
+            let sample_rate = 8000.0;
+            let bytes = match effect {
+                SoundEffect::Boot => {
+                    let duration = 0.55;
+                    let num_samples = (sample_rate * duration) as usize;
+                    let mut data = Vec::with_capacity(num_samples);
+                    for i in 0..num_samples {
+                        let t = i as f64 / sample_rate;
+                        let env = (-4.0 * t).exp();
+                        let fc = 350.0 + 550.0 * (t / duration);
+                        let fm = 110.0;
+                        let index = 8.0 * (1.0 - t / duration);
+                        
+                        let phase_m = 2.0 * std::f64::consts::PI * fm * t;
+                        let phase_c = 2.0 * std::f64::consts::PI * fc * t;
+                        let sample = (phase_c + index * phase_m.sin()).sin();
+                        let byte_val = (127.5 + 127.0 * sample * env) as u8;
+                        data.push(byte_val);
+                    }
+                    data
+                }
+                SoundEffect::Success => {
+                    let duration = 0.55;
+                    let num_samples = (sample_rate * duration) as usize;
+                    let mut data = Vec::with_capacity(num_samples);
+                    for i in 0..num_samples {
+                        let t = i as f64 / sample_rate;
+                        let env = (-3.0 * t).exp();
+                        
+                        let sample = if t < 0.15 {
+                            let fc = 523.25; // C5
+                            let fm = 261.6;
+                            let index = 3.0;
+                            (2.0 * std::f64::consts::PI * fc * t + index * (2.0 * std::f64::consts::PI * fm * t).sin()).sin()
+                        } else {
+                            let t2 = t - 0.15;
+                            let fc = 783.99; // G5
+                            let fm = 392.0;
+                            let index = 2.0;
+                            (2.0 * std::f64::consts::PI * fc * t2 + index * (2.0 * std::f64::consts::PI * fm * t2).sin()).sin()
+                        };
+                        
+                        let byte_val = (127.5 + 127.0 * sample * env) as u8;
+                        data.push(byte_val);
+                    }
+                    data
+                }
+                SoundEffect::Failure => {
+                    let duration = 0.7;
+                    let num_samples = (sample_rate * duration) as usize;
+                    let mut data = Vec::with_capacity(num_samples);
+                    for i in 0..num_samples {
+                        let t = i as f64 / sample_rate;
+                        let env = (-2.0 * t).exp();
+                        let fc = 200.0 - 120.0 * (t / duration);
+                        let fm = 55.0;
+                        let index = 12.0 * (1.0 - t / duration);
+                        
+                        let sample = (2.0 * std::f64::consts::PI * fc * t + index * (2.0 * std::f64::consts::PI * fm * t).sin()).sin();
+                        let byte_val = (127.5 + 127.0 * sample * env) as u8;
+                        data.push(byte_val);
+                    }
+                    data
+                }
+                SoundEffect::Connect => {
+                    let duration = 0.18;
+                    let num_samples = (sample_rate * duration) as usize;
+                    let mut data = Vec::with_capacity(num_samples);
+                    for i in 0..num_samples {
+                        let t = i as f64 / sample_rate;
+                        let env = (-4.0 * t).exp();
+                        let fc = 600.0 + 800.0 * (t / duration);
+                        let fm = 150.0;
+                        let index = 2.0;
+                        let sample = (2.0 * std::f64::consts::PI * fc * t + index * (2.0 * std::f64::consts::PI * fm * t).sin()).sin();
+                        let byte_val = (127.5 + 127.0 * sample * env) as u8;
+                        data.push(byte_val);
+                    }
+                    data
+                }
+                SoundEffect::Disconnect => {
+                    let duration = 0.22;
+                    let num_samples = (sample_rate * duration) as usize;
+                    let mut data = Vec::with_capacity(num_samples);
+                    for i in 0..num_samples {
+                        let t = i as f64 / sample_rate;
+                        let env = (-3.0 * t).exp();
+                        let fc = 1200.0 - 700.0 * (t / duration);
+                        let fm = 100.0;
+                        let index = 4.0;
+                        let sample = (2.0 * std::f64::consts::PI * fc * t + index * (2.0 * std::f64::consts::PI * fm * t).sin()).sin();
+                        let byte_val = (127.5 + 127.0 * sample * env) as u8;
+                        data.push(byte_val);
+                    }
+                    data
+                }
+            };
+
+            use std::io::Write;
+            if let Ok(mut child) = std::process::Command::new("aplay")
+                .args(&["-t", "raw", "-r", "8000", "-f", "U8"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(&bytes);
+                }
+                let _ = child.wait();
+            }
+        });
     }
 
     fn update_serial_notice(&mut self) {
@@ -789,6 +921,7 @@ impl App {
                 self.serial_monitor_baud_rates.remove(&port);
                 self.serial_pending_monitors.remove(&port);
                 let mut log_msg = None;
+                let mut play_effect = None;
                 if let Some(channel) = self.channels.iter_mut().find(|c| c.port == port) {
                     channel.finished = true;
                     channel.success = success;
@@ -803,16 +936,7 @@ impl App {
                         }
                         self.stats.total_passed += 1;
                         log_msg = Some("Flashing PASSED!".to_string());
-
-                        // Play non-blocking double beep and trigger success animation
-                        std::thread::spawn(|| {
-                            use std::io::Write;
-                            let _ = std::io::stdout().write_all(b"\x07");
-                            let _ = std::io::stdout().flush();
-                            std::thread::sleep(std::time::Duration::from_millis(150));
-                            let _ = std::io::stdout().write_all(b"\x07");
-                            let _ = std::io::stdout().flush();
-                        });
+                        play_effect = Some(SoundEffect::Success);
                         self.flash_success_ticks_remaining = Some(30);
                     } else {
                         channel.status = "FAILED".to_string();
@@ -821,10 +945,15 @@ impl App {
                         channel.qa_result = "FAIL".to_string();
                         self.stats.total_failed += 1;
                         log_msg = Some(format!("Flashing FAILED: {}", err));
+                        play_effect = Some(SoundEffect::Failure);
                     }
                     if let Some(m) = mac {
                         channel.mac = Some(m);
                     }
+                }
+
+                if let Some(effect) = play_effect {
+                    self.play_sound(effect);
                 }
 
                 if let Some(msg) = log_msg {
@@ -890,6 +1019,7 @@ impl App {
                     format!("Monitoring {} at {} bps", port, baud_rate),
                     SerialNoticeKind::Info,
                 );
+                self.play_sound(SoundEffect::Connect);
             }
             WorkerMessage::MonitorStopped { port } => {
                 self.serial_pending_monitors.remove(&port);
@@ -899,6 +1029,7 @@ impl App {
                     format!("Serial port {} released", port),
                     SerialNoticeKind::Success,
                 );
+                self.play_sound(SoundEffect::Disconnect);
             }
         }
     }

@@ -111,6 +111,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Background worker messages
             Some(msg) = rx.recv() => {
                 app.handle_worker_message(msg);
+                while let Ok(msg) = rx.try_recv() {
+                    app.handle_worker_message(msg);
+                }
             }
             // Signal handlers
             signal_result = &mut shutdown_signal => {
@@ -135,6 +138,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if key.kind == KeyEventKind::Press {
                                 if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                                     exit = true;
+                                } else if app.splash_ticks_remaining.is_some() {
+                                    app.finish_splash();
                                 } else if app.show_exit_menu {
                                     match key.code {
                                         KeyCode::Esc => {
@@ -472,6 +477,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         KeyCode::Char('b') | KeyCode::Char('B') => {
                                             if app.active_tab == ActiveTab::Serial {
                                                 app.cycle_serial_baud_rate();
+                                            } else if app.active_tab == ActiveTab::Flasher {
+                                                app.start_flashing(tx.clone());
                                             }
                                         }
                                         KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -622,7 +629,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             if app.active_tab == ActiveTab::Plotter {
                                                 app.set_plotter_active(!app.plotter_active);
                                                 app.log(format!("Plotter active: {}", if app.plotter_active { "ON" } else { "OFF" }));
-                                            } else if app.active_tab == ActiveTab::Flasher || app.active_tab == ActiveTab::Configuration {
+                                            } else if app.active_tab == ActiveTab::Flasher {
+                                                app.start_flashing_selected(tx.clone());
+                                            } else if app.active_tab == ActiveTab::Configuration {
                                                 app.start_flashing(tx.clone());
                                             } else if app.active_tab == ActiveTab::Serial {
                                                 app.serial_is_typing = true;
@@ -636,6 +645,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     app.selected_config_field =
                                                         PROJECT_CONFIG_FIELD_COUNT - 1;
                                                 }
+                                            } else if app.active_tab == ActiveTab::Flasher {
+                                                app.move_flash_selection(-1);
                                             }
                                         }
                                         KeyCode::Down => {
@@ -647,6 +658,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 } else {
                                                     app.selected_config_field = 0;
                                                 }
+                                            } else if app.active_tab == ActiveTab::Flasher {
+                                                app.move_flash_selection(1);
                                             }
                                         }
                                         KeyCode::Enter => {
