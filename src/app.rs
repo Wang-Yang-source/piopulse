@@ -2135,7 +2135,7 @@ mod tests {
     fn test_dashboard_empty_buttons_select_on_mouse_hover() {
         let mut app = App::new("test_project_config.json".to_string());
         app.active_tab = ActiveTab::Widgets;
-        app.layout_zones.monitor_panel = ratatui::layout::Rect::new(10, 5, 80, 20);
+        app.layout_zones.monitor_panel = ratatui::layout::Rect::new(10, 5, 90, 20);
 
         app.handle_mouse_move(30, 9);
         assert_eq!(
@@ -2148,6 +2148,19 @@ mod tests {
             app.hover_dashboard_empty_action,
             Some(DashboardEmptyAction::Slider)
         );
+
+        let _ = std::fs::remove_file("test_project_config.json");
+    }
+
+    #[test]
+    fn test_dashboard_empty_compact_mode_does_not_add_from_blank_space() {
+        let mut app = App::new("test_project_config.json".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        app.active_tab = ActiveTab::Widgets;
+        app.layout_zones.monitor_panel = ratatui::layout::Rect::new(0, 0, 70, 12);
+
+        assert!(app.handle_mouse_click(4, 9, tx));
+        assert!(app.dashboard_widgets.is_empty());
 
         let _ = std::fs::remove_file("test_project_config.json");
     }
