@@ -126,9 +126,9 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
         }
         "space_hint_flash" => {
             if is_zh {
-                "开始烧录"
+                "烧录选中"
             } else {
-                "Start Flash"
+                "Flash Selected"
             }
         }
         "space_hint_focus" => {

@@ -19,6 +19,20 @@ English documentation. The default README is now Chinese: [README.md](README.md)
 - VOFA+ plotter support for FireWater, JustFloat, and IndexFloat style streams.
 - Operator/Admin mode separation to reduce accidental production changes.
 
+## Preview
+
+Screenshots are stored in [`sources/`](sources/) and show the main TUI workflows.
+
+| Serial terminal | Serial monitoring |
+| --- | --- |
+| ![Serial terminal](sources/微信图片_20260618032546_6773_1.png) | ![Serial monitoring](sources/微信图片_20260618032701_6776_1.png) |
+
+| Batch flashing | Telemetry plotter |
+| --- | --- |
+| ![Batch flashing](sources/微信图片_20260618032620_6774_1.png) | ![Telemetry plotter](sources/微信图片_20260618032634_6775_1.png) |
+
+Demo video: [PioPulse TUI recording](sources/3367a56efd718d1d42ed957b38ccc8f8_raw.mp4)
+
 ## Run
 
 ```bash
@@ -32,7 +46,8 @@ cargo run
 - `3`: Widgets/dashboard
 - `4`: Flasher
 - `5`: Configuration
-- `Space`: Start flashing on the flasher/configuration tab, or start typing on the serial tab
+- `Space`: Flash the selected device on the flasher tab, or start typing on the serial tab
+- `B`: Batch flash all devices on the flasher tab
 - `F1`: Unlock/lock admin mode
 - `F2`: Toggle sidebar
 - `Esc`: Exit or cancel the current modal/editing state

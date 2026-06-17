@@ -1,6 +1,6 @@
 # Maintainer: Wang Yang <https://github.com/Wang-Yang-source>
 pkgname=piopulse-bin
-pkgver=0.1.1
+pkgver=0.2.2
 pkgrel=1
 pkgdesc="A terminal user interface (TUI) factory flashing tool designed for high-concurrency ESP32 chip flashing on production lines."
 arch=('x86_64')

@@ -1,12 +1,12 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
 PackageIdentifier: Wang-Yang.PioPulse
-PackageVersion: 0.1.1
+PackageVersion: 0.2.2
 DefaultLocale: en-US
 ManifestType: version
 ---
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.locale.1.6.0.schema.json
 PackageIdentifier: Wang-Yang.PioPulse
-PackageVersion: 0.1.1
+PackageVersion: 0.2.2
 PackageLocale: en-US
 Publisher: Wang Yang
 PublisherUrl: https://github.com/Wang-Yang-source
@@ -20,7 +20,7 @@ ManifestType: locale
 ---
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 PackageIdentifier: Wang-Yang.PioPulse
-PackageVersion: 0.1.1
+PackageVersion: 0.2.2
 Platform:
   - Windows.Desktop
 MinimumOSVersion: 10.0.0.0
@@ -31,6 +31,6 @@ Installers:
     NestedInstallerFiles:
       - RelativeFilePath: piopulse.exe
         PortableCommandAlias: piopulse
-    InstallerUrl: https://github.com/Wang-Yang-source/piopulse/releases/download/v0.1.1/piopulse-windows-x86_64.zip
+    InstallerUrl: https://github.com/Wang-Yang-source/piopulse/releases/download/v0.2.2/piopulse-windows-x86_64.zip
     InstallerSha256: INSERT_WINDOWS_X86_64_SHA256_HERE
 ManifestType: installer

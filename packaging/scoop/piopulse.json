@@ -1,11 +1,11 @@
 {
-  "version": "0.1.1",
+  "version": "0.2.2",
   "description": "A high-concurrency ESP32 factory flashing tool designed for production lines.",
   "homepage": "https://github.com/Wang-Yang-source/piopulse",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/Wang-Yang-source/piopulse/releases/download/v0.1.1/piopulse-windows-x86_64.zip",
+      "url": "https://github.com/Wang-Yang-source/piopulse/releases/download/v0.2.2/piopulse-windows-x86_64.zip",
       "hash": "INSERT_WINDOWS_X86_64_SHA256_HERE"
     }
   },

@@ -124,24 +124,65 @@ pub fn start_flashing_task(port: String, config: Arc<ProjectConfig>, tx: Sender<
     });
 }
 
-pub fn spawn_serial_monitor(port_name: String, baud_rate: u32, tx: Sender<WorkerMessage>) {
+pub fn spawn_serial_monitor(
+    port_name: String,
+    baud_rate: u32,
+    frame_format: String,
+    tx: Sender<WorkerMessage>,
+    mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
+) {
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+            _ = &mut cancel_rx => {
+                return;
+            }
+        }
+
+        match cancel_rx.try_recv() {
+            Ok(_) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => return,
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+        }
 
         let (tx_cmd, mut rx_cmd) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
         let _ = tx
             .send(WorkerMessage::Log {
                 port: port_name.clone(),
-                message: format!("Starting Serial Monitor (Baud: {})...", baud_rate),
+                message: format!(
+                    "Starting Serial Monitor (Baud: {}, Format: {})...",
+                    baud_rate, frame_format
+                ),
             })
             .await;
 
         let _ = tokio::task::spawn_blocking(move || {
-            let mut port = match serialport::new(&port_name, baud_rate)
-                .timeout(Duration::from_millis(100))
-                .open_native()
-            {
+            let mut port_builder =
+                serialport::new(&port_name, baud_rate).timeout(Duration::from_millis(100));
+
+            if let Some(db_char) = frame_format.chars().next() {
+                match db_char {
+                    '5' => port_builder = port_builder.data_bits(serialport::DataBits::Five),
+                    '6' => port_builder = port_builder.data_bits(serialport::DataBits::Six),
+                    '7' => port_builder = port_builder.data_bits(serialport::DataBits::Seven),
+                    _ => port_builder = port_builder.data_bits(serialport::DataBits::Eight),
+                }
+            }
+            if let Some(par_char) = frame_format.chars().nth(2) {
+                match par_char {
+                    'E' | 'e' => port_builder = port_builder.parity(serialport::Parity::Even),
+                    'O' | 'o' => port_builder = port_builder.parity(serialport::Parity::Odd),
+                    _ => port_builder = port_builder.parity(serialport::Parity::None),
+                }
+            }
+            if let Some(sb_char) = frame_format.chars().nth(4) {
+                match sb_char {
+                    '2' => port_builder = port_builder.stop_bits(serialport::StopBits::Two),
+                    _ => port_builder = port_builder.stop_bits(serialport::StopBits::One),
+                }
+            }
+
+            let mut port = match port_builder.open_native() {
                 Ok(p) => p,
                 Err(e) => {
                     let _ = tx.blocking_send(WorkerMessage::Log {

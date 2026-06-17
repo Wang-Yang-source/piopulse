@@ -92,6 +92,39 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 },
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
+            Span::styled(
+                "f",
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if lang == "zh" {
+                    "切换格式 "
+                } else {
+                    "Switch Format "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+        ]);
+    }
+
+    if app.active_tab == crate::app::ActiveTab::Flasher {
+        footer_spans.extend([
+            Span::styled(
+                "b",
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if lang == "zh" {
+                    "批量烧录 "
+                } else {
+                    "Batch Flash "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
         ]);
     }
 

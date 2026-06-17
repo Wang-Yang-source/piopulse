@@ -4,6 +4,8 @@ use ratatui::layout::Rect;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub const SPLASH_TICKS: usize = 4;
+
 #[derive(Debug, Clone, Copy)]
 pub enum SoundEffect {
     Boot,
@@ -300,6 +302,7 @@ pub struct App {
     pub anim_tick: f32,
     pub splash_ticks_remaining: Option<usize>,
     pub flash_success_ticks_remaining: Option<usize>,
+    pub serial_frame_format: String,
 }
 
 impl App {
@@ -420,8 +423,9 @@ impl App {
             serial_notice: None,
             worker_tx: None,
             anim_tick: 0.0,
-            splash_ticks_remaining: Some(20),
+            splash_ticks_remaining: Some(SPLASH_TICKS),
             flash_success_ticks_remaining: None,
+            serial_frame_format: "8-N-1".to_string(),
         };
 
         crate::vofa::ACTIVE_VOFA_MODE
@@ -645,7 +649,7 @@ impl App {
                         let fc = 350.0 + 550.0 * (t / duration);
                         let fm = 110.0;
                         let index = 8.0 * (1.0 - t / duration);
-                        
+
                         let phase_m = 2.0 * std::f64::consts::PI * fm * t;
                         let phase_c = 2.0 * std::f64::consts::PI * fc * t;
                         let sample = (phase_c + index * phase_m.sin()).sin();
@@ -661,20 +665,24 @@ impl App {
                     for i in 0..num_samples {
                         let t = i as f64 / sample_rate;
                         let env = (-3.0 * t).exp();
-                        
+
                         let sample = if t < 0.15 {
                             let fc = 523.25; // C5
                             let fm = 261.6;
                             let index = 3.0;
-                            (2.0 * std::f64::consts::PI * fc * t + index * (2.0 * std::f64::consts::PI * fm * t).sin()).sin()
+                            (2.0 * std::f64::consts::PI * fc * t
+                                + index * (2.0 * std::f64::consts::PI * fm * t).sin())
+                            .sin()
                         } else {
                             let t2 = t - 0.15;
                             let fc = 783.99; // G5
                             let fm = 392.0;
                             let index = 2.0;
-                            (2.0 * std::f64::consts::PI * fc * t2 + index * (2.0 * std::f64::consts::PI * fm * t2).sin()).sin()
+                            (2.0 * std::f64::consts::PI * fc * t2
+                                + index * (2.0 * std::f64::consts::PI * fm * t2).sin())
+                            .sin()
                         };
-                        
+
                         let byte_val = (127.5 + 127.0 * sample * env) as u8;
                         data.push(byte_val);
                     }
@@ -690,8 +698,10 @@ impl App {
                         let fc = 200.0 - 120.0 * (t / duration);
                         let fm = 55.0;
                         let index = 12.0 * (1.0 - t / duration);
-                        
-                        let sample = (2.0 * std::f64::consts::PI * fc * t + index * (2.0 * std::f64::consts::PI * fm * t).sin()).sin();
+
+                        let sample = (2.0 * std::f64::consts::PI * fc * t
+                            + index * (2.0 * std::f64::consts::PI * fm * t).sin())
+                        .sin();
                         let byte_val = (127.5 + 127.0 * sample * env) as u8;
                         data.push(byte_val);
                     }
@@ -707,7 +717,9 @@ impl App {
                         let fc = 600.0 + 800.0 * (t / duration);
                         let fm = 150.0;
                         let index = 2.0;
-                        let sample = (2.0 * std::f64::consts::PI * fc * t + index * (2.0 * std::f64::consts::PI * fm * t).sin()).sin();
+                        let sample = (2.0 * std::f64::consts::PI * fc * t
+                            + index * (2.0 * std::f64::consts::PI * fm * t).sin())
+                        .sin();
                         let byte_val = (127.5 + 127.0 * sample * env) as u8;
                         data.push(byte_val);
                     }
@@ -723,7 +735,9 @@ impl App {
                         let fc = 1200.0 - 700.0 * (t / duration);
                         let fm = 100.0;
                         let index = 4.0;
-                        let sample = (2.0 * std::f64::consts::PI * fc * t + index * (2.0 * std::f64::consts::PI * fm * t).sin()).sin();
+                        let sample = (2.0 * std::f64::consts::PI * fc * t
+                            + index * (2.0 * std::f64::consts::PI * fm * t).sin())
+                        .sin();
                         let byte_val = (127.5 + 127.0 * sample * env) as u8;
                         data.push(byte_val);
                     }
@@ -823,6 +837,7 @@ impl App {
                     worker::spawn_serial_monitor(
                         selected_port.clone(),
                         self.serial_baud_rate,
+                        self.serial_frame_format.clone(),
                         tx.clone(),
                         cancel_rx,
                     );
@@ -1277,6 +1292,34 @@ impl App {
         self.log(format!("Baud rate set to {} bps.", self.serial_baud_rate));
     }
 
+    pub fn cycle_serial_frame_format(&mut self) {
+        let next = match self.serial_frame_format.as_str() {
+            "8-N-1" => "8-E-1",
+            "8-E-1" => "8-O-1",
+            "8-O-1" => "8-N-2",
+            "8-N-2" => "7-N-1",
+            "7-N-1" => "7-E-1",
+            "7-E-1" => "7-O-1",
+            _ => "8-N-1",
+        };
+        self.serial_frame_format = next.to_string();
+        if let Some(port) = self.get_selected_port() {
+            let had_monitor = self.serial_tx_senders.remove(&port).is_some()
+                || self.serial_monitor_baud_rates.remove(&port).is_some()
+                || self.serial_pending_monitors.remove(&port).is_some();
+            if had_monitor {
+                self.show_serial_notice(
+                    format!("Restarting {} with {}", port, self.serial_frame_format),
+                    SerialNoticeKind::Info,
+                );
+            }
+        }
+        self.log(format!(
+            "Serial frame format set to {}.",
+            self.serial_frame_format
+        ));
+    }
+
     pub fn submit_serial_command(&mut self, cmd: &str) {
         let trimmed = cmd.trim();
         if trimmed.is_empty() {
@@ -1398,14 +1441,14 @@ impl App {
         }
 
         use unicode_width::UnicodeWidthStr;
-        let title = " ☕ PIOPULSE v0.1.3 ";
+        let title = format!(" ☕ PIOPULSE v{} ", env!("CARGO_PKG_VERSION"));
         let mode = if self.admin_mode {
             crate::ui::tr("admin_mode_header", &self.tool_config.language)
         } else {
             crate::ui::tr("operator_mode_header", &self.tool_config.language)
         };
         let relative_col = col.saturating_sub(area.x) as usize;
-        let mode_start = UnicodeWidthStr::width(title) + UnicodeWidthStr::width(" | ");
+        let mode_start = UnicodeWidthStr::width(title.as_str()) + UnicodeWidthStr::width(" | ");
         let mode_end = mode_start + UnicodeWidthStr::width(mode);
 
         (mode_start..mode_end).contains(&relative_col)
@@ -1445,6 +1488,24 @@ impl App {
         } else {
             None
         }
+    }
+
+    pub fn handle_mouse_right_click(
+        &mut self,
+        col: u16,
+        row: u16,
+        _tx: tokio::sync::mpsc::Sender<WorkerMessage>,
+    ) -> bool {
+        if self.active_tab == ActiveTab::Serial {
+            if self.is_inside_rect(col, row, self.layout_zones.serial_port_info) {
+                let idx = row.saturating_sub(self.layout_zones.serial_port_info.y + 1) as usize;
+                if idx == 1 {
+                    self.cycle_serial_frame_format();
+                    return true;
+                }
+            }
+        }
+        true
     }
 
     pub fn handle_mouse_click(
@@ -1701,6 +1762,14 @@ impl App {
 
         // 3. Serial Settings & Toggles Check
         if self.active_tab == ActiveTab::Serial {
+            if self.is_inside_rect(col, row, self.layout_zones.serial_port_info) {
+                let idx = row.saturating_sub(self.layout_zones.serial_port_info.y + 1) as usize;
+                if idx == 1 {
+                    self.cycle_serial_baud_rate();
+                    return true;
+                }
+            }
+
             if self.is_inside_rect(col, row, self.layout_zones.serial_options) {
                 if let Some(option_idx) =
                     crate::ui::serial::serial_option_at(self.layout_zones.serial_options, col, row)
@@ -2005,7 +2074,7 @@ impl App {
             ActiveTab::Serial => {
                 if self.is_inside_rect(col, row, self.layout_zones.serial_port_info) {
                     let idx = row.saturating_sub(self.layout_zones.serial_port_info.y + 1) as usize;
-                    if idx <= 1 {
+                    if idx <= 2 {
                         self.hover_serial_port_info = Some(idx);
                     }
                     return;
@@ -2606,6 +2675,9 @@ mod tests {
         app.handle_mouse_move(12, 6);
         assert_eq!(app.hover_serial_port_info, Some(0));
 
+        app.handle_mouse_move(12, 8);
+        assert_eq!(app.hover_serial_port_info, Some(2));
+
         app.handle_mouse_move(32, 7);
         assert_eq!(app.hover_serial_option, Some(2));
 
@@ -3015,8 +3087,10 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.layout_zones.header = ratatui::layout::Rect::new(0, 0, 80, 2);
 
-        let mode_x =
-            UnicodeWidthStr::width(" ☕ PIOPULSE v0.1.3 ") + UnicodeWidthStr::width(" | ") + 1;
+        let mode_x = UnicodeWidthStr::width(
+            format!(" ☕ PIOPULSE v{} ", env!("CARGO_PKG_VERSION")).as_str(),
+        ) + UnicodeWidthStr::width(" | ")
+            + 1;
         assert!(app.handle_mouse_click(mode_x as u16, 0, tx));
         assert!(app.is_entering_password);
 

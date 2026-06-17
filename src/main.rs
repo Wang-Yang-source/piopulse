@@ -481,6 +481,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.start_flashing(tx.clone());
                                             }
                                         }
+                                        KeyCode::Char('f') | KeyCode::Char('F') => {
+                                            if app.active_tab == ActiveTab::Serial {
+                                                app.cycle_serial_frame_format();
+                                            }
+                                        }
                                         KeyCode::Char('n') | KeyCode::Char('N') => {
                                             if app.active_tab == ActiveTab::Serial {
                                                 app.serial_add_newline = !app.serial_add_newline;
@@ -682,6 +687,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if !app.handle_mouse_click(mouse.column, mouse.row, tx.clone()) {
                                         exit = true;
                                     }
+                                }
+                                crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
+                                    let _ = app.handle_mouse_right_click(mouse.column, mouse.row, tx.clone());
                                 }
                                 crossterm::event::MouseEventKind::ScrollUp => {
                                     app.handle_mouse_scroll(true, mouse.column, mouse.row);

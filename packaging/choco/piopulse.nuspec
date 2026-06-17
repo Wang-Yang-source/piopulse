@@ -3,7 +3,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <id>piopulse</id>
-    <version>0.1.1</version>
+    <version>0.2.2</version>
     <title>PioPulse Flasher</title>
     <authors>Wang Yang</authors>
     <owners>Wang-Yang-source</owners>

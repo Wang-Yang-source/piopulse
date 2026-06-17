@@ -151,7 +151,8 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
 
                 // 2. Draw the scrolling ECG pulse waveform
                 let ecg_wave = |phase: f64| -> f64 {
-                    let mut p = (phase % (2.0 * std::f64::consts::PI)) / (2.0 * std::f64::consts::PI);
+                    let mut p =
+                        (phase % (2.0 * std::f64::consts::PI)) / (2.0 * std::f64::consts::PI);
                     if p < 0.0 {
                         p += 1.0;
                     }
@@ -160,11 +161,11 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
                     };
 
                     let mut y = 0.0;
-                    y += gauss(p, 0.2, 0.03, 1.2);   // P wave (small bump)
+                    y += gauss(p, 0.2, 0.03, 1.2); // P wave (small bump)
                     y += gauss(p, 0.35, 0.015, -1.0); // Q wave (small dip)
-                    y += gauss(p, 0.4, 0.012, 7.5);   // R wave (high spike)
+                    y += gauss(p, 0.4, 0.012, 7.5); // R wave (high spike)
                     y += gauss(p, 0.45, 0.018, -2.5); // S wave (deep dip)
-                    y += gauss(p, 0.6, 0.06, 1.8);    // T wave (medium bump)
+                    y += gauss(p, 0.6, 0.06, 1.8); // T wave (medium bump)
                     y
                 };
 
@@ -173,7 +174,7 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
                 for s in 0..=num_segments {
                     let alpha = s as f64 / num_segments as f64;
                     let x = -x_limit + alpha * (2.0 * x_limit);
-                    
+
                     // Wave scrolls right-to-left
                     let phase = (x * 0.25) - (t * 0.15);
                     let y = ecg_wave(phase);
@@ -196,7 +197,7 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     " Select a serial port on the right to start monitoring... "
                 };
-                
+
                 // Draw a beautiful centered box for the message to overlay the oscilloscope grid cleanly
                 ctx.print(
                     -x_limit + 1.0,
@@ -277,7 +278,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4), // Port Info & Baud
+            Constraint::Length(5), // Port, baud, and monitor state
             Constraint::Length(6), // Toggles / Settings
             Constraint::Length(6), // Timeline / Parser Summary
             Constraint::Min(5),    // Quick Command Templates
@@ -321,17 +322,22 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         }
     };
 
+    let inner_width = chunks[0].width.saturating_sub(2) as usize;
+    let value_width = inner_width.saturating_sub(if lang == "zh" { 6 } else { 8 });
+
     let status_line = if let Some(notice) = &app.serial_notice {
         let style = serial_notice_style(notice);
         Line::from(vec![
             Span::styled(
-                format!("{} ", serial_notice_spinner(notice)),
-                Style::default()
-                    .fg(serial_notice_color(notice))
-                    .add_modifier(Modifier::BOLD),
+                if lang == "zh" { "状态 " } else { "State " },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
-                truncate_for_panel(&notice.message, chunks[0].width.saturating_sub(5) as usize),
+                format!(
+                    "{} {}",
+                    serial_notice_spinner(notice),
+                    truncate_for_panel(&notice.message, value_width.saturating_sub(2))
+                ),
                 style,
             ),
         ])
@@ -363,7 +369,10 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
-                format!("{}  open:{} pending:{}", state, open, pending),
+                truncate_for_panel(
+                    &format!("{}  open:{} pending:{}", state, open, pending),
+                    value_width,
+                ),
                 Style::default().fg(CATPPUCCIN_MOCHA.text),
             ),
         ])
@@ -376,23 +385,25 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
-                active_port,
+                truncate_for_panel(&active_port, value_width),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.text)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  "),
+        ])
+        .style(info_row_style(0)),
+        Line::from(vec![
             Span::styled(
                 tr("serial_baud", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
-                format!("{} 8-N-1", app.serial_baud_rate),
+                format!("{} {}", app.serial_baud_rate, app.serial_frame_format),
                 Style::default().fg(CATPPUCCIN_MOCHA.success),
             ),
         ])
-        .style(info_row_style(0)),
-        status_line.style(info_row_style(1)),
+        .style(info_row_style(1)),
+        status_line.style(info_row_style(2)),
     ];
 
     f.render_widget(Paragraph::new(info_text).block(info_block), chunks[0]);
@@ -411,9 +422,9 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .style(Style::default().bg(CATPPUCCIN_MOCHA.panel));
 
     let monitor_check = if app.serial_monitor_enabled {
-        "[X]"
+        "■_active"
     } else {
-        "[ ]"
+        "■_inactive"
     };
     let scroll_check = if app.serial_auto_scroll { "[X]" } else { "[ ]" };
     let crlf_check = if app.serial_add_newline { "[X]" } else { "[ ]" };
@@ -771,8 +782,22 @@ fn option_cell_spans<'a>(
         CATPPUCCIN_MOCHA.text
     };
 
+    let (check_str, check_color) = if check == "■_active" {
+        ("■", CATPPUCCIN_MOCHA.success) // green
+    } else if check == "■_inactive" {
+        ("■", CATPPUCCIN_MOCHA.danger) // red
+    } else {
+        (check, accent)
+    };
+
+    let is_monitor_lamp = check == "■_active" || check == "■_inactive";
+    let leading_pad = if is_monitor_lamp { " " } else { "" };
+
     vec![
-        Span::styled(format!("{} ", check), cell_style.fg(accent)),
+        Span::styled(
+            format!("{}{} ", leading_pad, check_str),
+            cell_style.fg(check_color),
+        ),
         Span::styled(label, cell_style.fg(label_color)),
         Span::styled(
             format!("[{}]", key),
@@ -782,7 +807,19 @@ fn option_cell_spans<'a>(
 }
 
 fn option_cell_display_width(check: &str, label: &str, key: &str) -> usize {
-    UnicodeWidthStr::width(check)
+    let clean_check = if check == "■_active" || check == "■_inactive" {
+        "■"
+    } else {
+        check
+    };
+    let leading_pad_width = if check == "■_active" || check == "■_inactive" {
+        1
+    } else {
+        0
+    };
+
+    leading_pad_width
+        + UnicodeWidthStr::width(clean_check)
         + 1
         + UnicodeWidthStr::width(label)
         + UnicodeWidthStr::width(format!("[{}]", key).as_str())
