@@ -71,6 +71,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.layout_zones.port_menu_modal = area;
         modal::draw_port_menu(f, app, area);
     }
+
+    if app.flash_success_ticks_remaining.is_some() {
+        draw_flash_success_animation(f, app);
+    }
 }
 
 fn draw_main_area(f: &mut Frame, app: &mut App, area: Rect) {
@@ -381,4 +385,97 @@ fn draw_splash_screen(f: &mut Frame, app: &App) {
     )]))
     .alignment(ratatui::layout::Alignment::Center);
     f.render_widget(skip_hint, chunks[4]);
+}
+
+fn draw_flash_success_animation(f: &mut Frame, app: &App) {
+    let area = f.size();
+    
+    // We want a centered modal dialog
+    let modal_area = center_rect(50, 15, area);
+    
+    // Clear the background of the modal
+    f.render_widget(Clear, modal_area);
+    
+    let border_style = Style::default().fg(CATPPUCCIN_MOCHA.success);
+    let success_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Double)
+        .border_style(border_style)
+        .title(Span::styled(" FLASH SUCCESS 🎉 ", Style::default().fg(CATPPUCCIN_MOCHA.success).add_modifier(Modifier::BOLD)));
+        
+    f.render_widget(success_block.clone(), modal_area);
+    
+    // Inner area for canvas animation
+    let inner_area = success_block.inner(modal_area);
+    
+    // Let's paint a beautiful radiating checkmark and pulse waves!
+    let aspect = (inner_area.width as f64 / inner_area.height as f64) * 0.5;
+    let x_limit = 10.0 * aspect;
+    
+    let canvas = Canvas::default()
+        .x_bounds([-x_limit, x_limit])
+        .y_bounds([-5.0, 5.0])
+        .paint(move |ctx| {
+            let ticks = app.flash_success_ticks_remaining.unwrap_or(0) as f64;
+            // progress of animation goes from 0.0 (end) to 1.0 (start)
+            let progress = (30.0 - ticks) / 30.0;
+            
+            // Draw a big green checkmark in the center
+            // Line 1: from (-2, -0.5) to (0, -2.5)
+            // Line 2: from (0, -2.5) to (3.5, 2.0)
+            ctx.draw(&ratatui::widgets::canvas::Line {
+                x1: -2.0,
+                y1: -0.5,
+                x2: 0.0,
+                y2: -2.5,
+                color: CATPPUCCIN_MOCHA.success,
+            });
+            ctx.draw(&ratatui::widgets::canvas::Line {
+                x1: 0.0,
+                y1: -2.5,
+                x2: 3.5,
+                y2: 2.0,
+                color: CATPPUCCIN_MOCHA.success,
+            });
+            
+            // Draw radiating pulse rings
+            let num_rings = 3;
+            for r in 0..num_rings {
+                let ring_progress = progress + (r as f64 * 0.3);
+                let radius = (ring_progress % 1.0) * 8.0;
+                
+                // Draw a circle on canvas
+                let steps = 32;
+                let mut prev_point: Option<(f64, f64)> = None;
+                for step in 0..=steps {
+                    let theta = (step as f64) * (2.0 * std::f64::consts::PI / steps as f64);
+                    let rx = theta.cos() * radius;
+                    let ry = theta.sin() * radius * 0.5; // aspect compression
+                    
+                    let color = if ring_progress % 1.0 < 0.8 {
+                        CATPPUCCIN_MOCHA.success
+                    } else {
+                        CATPPUCCIN_MOCHA.border
+                    };
+                    
+                    if let Some((px, py)) = prev_point {
+                        ctx.draw(&ratatui::widgets::canvas::Line {
+                            x1: px,
+                            y1: py,
+                            x2: rx,
+                            y2: ry,
+                            color,
+                        });
+                    }
+                    prev_point = Some((rx, ry));
+                }
+            }
+            
+            // Draw text
+            let is_zh = app.tool_config.language == "zh";
+            let msg = if is_zh { "烧录成功!" } else { "FLASH COMPLETED!" };
+            ctx.print(-3.5, 3.5, Span::styled(msg, Style::default().fg(CATPPUCCIN_MOCHA.success).add_modifier(Modifier::BOLD)));
+        });
+        
+    f.render_widget(canvas, inner_area);
 }
