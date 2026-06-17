@@ -20,6 +20,24 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{io, time::Duration};
 use tokio::sync::mpsc;
 
+#[cfg(unix)]
+async fn shutdown_signal() -> io::Result<()> {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+
+    tokio::select! {
+        _ = sigterm.recv() => {}
+        _ = sigint.recv() => {}
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() -> io::Result<()> {
+    tokio::signal::ctrl_c().await
+}
+
 fn restore_terminal() {
     let _ = disable_raw_mode();
     let mut stdout = std::io::stdout();
@@ -41,10 +59,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Setup signal handlers for SIGINT/SIGTERM
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-
     // Create app
     let config_path = "project_config.json".to_string();
     let mut app = App::new(config_path);
@@ -61,6 +75,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut interval = tokio::time::interval(Duration::from_millis(100));
 
     let mut exit = false;
+    let shutdown_signal = shutdown_signal();
+    tokio::pin!(shutdown_signal);
 
     while !exit {
         terminal.draw(|f| ui::draw(f, &mut app))?;
@@ -71,10 +87,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.handle_worker_message(msg);
             }
             // Signal handlers
-            _ = sigterm.recv() => {
-                exit = true;
-            }
-            _ = sigint.recv() => {
+            signal_result = &mut shutdown_signal => {
+                signal_result?;
                 exit = true;
             }
             // Standard ticks
@@ -452,7 +466,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
                                         KeyCode::Char('m') | KeyCode::Char('M') => {
-                                            if app.active_tab == ActiveTab::Plotter {
+                                            if app.active_tab == ActiveTab::Serial {
+                                                app.toggle_serial_monitor();
+                                            } else if app.active_tab == ActiveTab::Plotter {
                                                 app.cycle_vofa_mode();
                                             }
                                         }
@@ -629,10 +645,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 crossterm::event::MouseEventKind::ScrollUp => {
-                                    app.handle_mouse_scroll(true);
+                                    app.handle_mouse_scroll(true, mouse.column, mouse.row);
                                 }
                                 crossterm::event::MouseEventKind::ScrollDown => {
-                                    app.handle_mouse_scroll(false);
+                                    app.handle_mouse_scroll(false, mouse.column, mouse.row);
                                 }
                                 crossterm::event::MouseEventKind::Moved => {
                                     app.handle_mouse_move(mouse.column, mouse.row);

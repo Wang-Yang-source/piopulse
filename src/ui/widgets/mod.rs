@@ -11,7 +11,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::canvas::{Canvas, Line as CanvasLine},
-    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
 
 pub fn get_catalog_items() -> Vec<(&'static str, &'static str, WidgetType)> {
@@ -431,6 +431,7 @@ fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
         )
         .style(Style::default().bg(CATPPUCCIN_MOCHA.panel));
 
+    f.render_widget(Clear, area);
     f.render_widget(p, area);
 }
 

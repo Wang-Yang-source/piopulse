@@ -17,7 +17,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(2),
             Constraint::Min(10),
             Constraint::Length(4),
         ])
@@ -69,70 +69,52 @@ fn draw_header_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let protocol_str = format!("{:?}", app.vofa_mode);
     let view_str = format!("{:?}", app.plotter_mode);
+    let items = crate::app::plotter_header_items(
+        lang,
+        true,
+        selected_port,
+        protocol_str,
+        view_str,
+        stream_label.to_string(),
+    );
 
-    let lines = vec![
-        Line::from(vec![
-            Span::styled(
-                tr("plot_title", lang),
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.text)
-                    .bg(mocha::SURFACE1)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            pill(
-                if lang == "zh" { "端口" } else { "Port" },
-                &selected_port,
-                CATPPUCCIN_MOCHA.primary,
-                app.hover_plotter_header_action == Some(0),
-            ),
-            Span::raw("  "),
-            pill(
-                if lang == "zh" { "协议" } else { "Protocol" },
-                &protocol_str,
-                CATPPUCCIN_MOCHA.accent,
-                app.hover_plotter_header_action == Some(1),
-            ),
-            Span::raw("  "),
-            pill(
-                if lang == "zh" { "视图" } else { "View" },
-                &view_str,
-                CATPPUCCIN_MOCHA.info,
-                app.hover_plotter_header_action == Some(2),
-            ),
-            Span::raw("  "),
-            pill(
-                if lang == "zh" { "状态" } else { "State" },
-                stream_label,
-                stream_color,
-                app.hover_plotter_header_action == Some(3),
-            ),
-        ]),
-        Line::from(vec![
-            key_hint("Left/Right"),
-            Span::raw(tr("plot_port_hint", lang)),
-            key_hint("M"),
-            Span::raw(tr("plot_protocol_hint", lang)),
-            key_hint("V"),
-            Span::raw(tr("plot_view_hint", lang)),
-            key_hint("Space/S"),
-            Span::raw(tr("plot_start_hint", lang)),
-            key_hint("C"),
-            Span::raw(tr("plot_clear_hint", lang)),
-            key_hint("+/-"),
-            Span::raw(if lang == "zh" {
-                " 缩放   "
-            } else {
-                " zoom   "
-            }),
-            key_hint(",./0"),
-            Span::raw(if lang == "zh" {
-                " 平移/最新"
-            } else {
-                " pan/latest"
-            }),
-        ]),
-    ];
+    let lines = vec![Line::from(vec![
+        Span::styled(
+            tr("plot_title", lang),
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text)
+                .bg(mocha::SURFACE1)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        pill(
+            &items[0].0,
+            &items[0].1,
+            CATPPUCCIN_MOCHA.primary,
+            app.hover_plotter_header_action == Some(0),
+        ),
+        Span::raw("  "),
+        pill(
+            &items[1].0,
+            &items[1].1,
+            CATPPUCCIN_MOCHA.accent,
+            app.hover_plotter_header_action == Some(1),
+        ),
+        Span::raw("  "),
+        pill(
+            &items[2].0,
+            &items[2].1,
+            CATPPUCCIN_MOCHA.info,
+            app.hover_plotter_header_action == Some(2),
+        ),
+        Span::raw("  "),
+        pill(
+            &items[3].0,
+            &items[3].1,
+            stream_color,
+            app.hover_plotter_header_action == Some(3),
+        ),
+    ])];
 
     let p = Paragraph::new(lines)
         .block(
@@ -162,15 +144,6 @@ fn pill(label: &str, value: &str, color: ratatui::style::Color, hovered: bool) -
                         Modifier::empty()
                     },
             ),
-    )
-}
-
-fn key_hint<'a>(key: &'a str) -> Span<'a> {
-    Span::styled(
-        key,
-        Style::default()
-            .fg(CATPPUCCIN_MOCHA.accent)
-            .add_modifier(Modifier::BOLD),
     )
 }
 

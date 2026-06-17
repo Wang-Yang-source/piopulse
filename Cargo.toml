@@ -1,6 +1,6 @@
 [package]
 name = "piopulse"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 description = "A terminal user interface (TUI) factory flashing tool designed for high-concurrency ESP32 chip flashing on production lines."
 license = "MIT"

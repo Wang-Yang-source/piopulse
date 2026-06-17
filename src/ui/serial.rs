@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::app::{App, SerialNotice, SerialNoticeKind};
 use crate::ui::theme::{CATPPUCCIN_MOCHA, mocha};
 use crate::ui::tr;
 use ratatui::{
@@ -33,15 +33,29 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
 
     let lang = &app.tool_config.language;
     // 1. Receive Console block
-    let rx_title = tr("serial_rx_title", lang).replace("{}", &active_port);
+    let rx_title = if let Some(notice) = &app.serial_notice {
+        format!(
+            "{}  {} {}",
+            tr("serial_rx_title", lang).replace("{}", &active_port),
+            serial_notice_spinner(notice),
+            notice.message
+        )
+    } else {
+        tr("serial_rx_title", lang).replace("{}", &active_port)
+    };
+    let console_border = app
+        .serial_notice
+        .as_ref()
+        .map(serial_notice_color)
+        .unwrap_or(CATPPUCCIN_MOCHA.border_focus);
     let console_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border_focus))
+        .border_style(Style::default().fg(console_border))
         .title(Span::styled(
             rx_title,
             Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
+                .fg(console_border)
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -156,10 +170,10 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),  // Port Info & Baud
-            Constraint::Length(10), // Toggles / Settings
-            Constraint::Length(8),  // Timeline / Parser Summary
-            Constraint::Min(5),     // Quick Command Templates
+            Constraint::Length(4), // Port Info & Baud
+            Constraint::Length(6), // Toggles / Settings
+            Constraint::Length(6), // Timeline / Parser Summary
+            Constraint::Min(5),    // Quick Command Templates
         ])
         .split(area);
 
@@ -172,10 +186,15 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let active_port = app
         .get_selected_port()
         .unwrap_or_else(|| "NONE".to_string());
+    let port_border = app
+        .serial_notice
+        .as_ref()
+        .map(serial_notice_color)
+        .unwrap_or(CATPPUCCIN_MOCHA.border);
     let info_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
+        .border_style(Style::default().fg(port_border))
         .title(Span::styled(
             tr("serial_port_info", lang),
             Style::default()
@@ -195,6 +214,54 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         }
     };
 
+    let status_line = if let Some(notice) = &app.serial_notice {
+        let style = serial_notice_style(notice);
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", serial_notice_spinner(notice)),
+                Style::default()
+                    .fg(serial_notice_color(notice))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                truncate_for_panel(&notice.message, chunks[0].width.saturating_sub(5) as usize),
+                style,
+            ),
+        ])
+    } else {
+        let pending = app.serial_pending_monitors.len();
+        let open = app.serial_tx_senders.len();
+        let state = if app.serial_monitor_enabled {
+            if pending > 0 {
+                if lang == "zh" { "打开中" } else { "opening" }
+            } else if open > 0 {
+                if lang == "zh" {
+                    "监视中"
+                } else {
+                    "monitoring"
+                }
+            } else if lang == "zh" {
+                "待连接"
+            } else {
+                "idle"
+            }
+        } else if lang == "zh" {
+            "已暂停"
+        } else {
+            "paused"
+        };
+        Line::from(vec![
+            Span::styled(
+                if lang == "zh" { "状态 " } else { "State " },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(
+                format!("{}  open:{} pending:{}", state, open, pending),
+                Style::default().fg(CATPPUCCIN_MOCHA.text),
+            ),
+        ])
+    };
+
     let info_text = vec![
         Line::from(vec![
             Span::styled(
@@ -207,26 +274,18 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
                     .fg(CATPPUCCIN_MOCHA.text)
                     .add_modifier(Modifier::BOLD),
             ),
-        ])
-        .style(info_row_style(0)),
-        Line::from(vec![
+            Span::raw("  "),
             Span::styled(
                 tr("serial_baud", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
-                format!("{} bps", app.serial_baud_rate),
+                format!("{} 8-N-1", app.serial_baud_rate),
                 Style::default().fg(CATPPUCCIN_MOCHA.success),
             ),
         ])
-        .style(info_row_style(1)),
-        Line::from(vec![
-            Span::styled(
-                tr("serial_bits", lang),
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
-            Span::styled("8-N-1", Style::default().fg(CATPPUCCIN_MOCHA.text)),
-        ]),
+        .style(info_row_style(0)),
+        status_line.style(info_row_style(1)),
     ];
 
     f.render_widget(Paragraph::new(info_text).block(info_block), chunks[0]);
@@ -244,6 +303,11 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         ))
         .style(Style::default().bg(CATPPUCCIN_MOCHA.panel));
 
+    let monitor_check = if app.serial_monitor_enabled {
+        "[X]"
+    } else {
+        "[ ]"
+    };
     let scroll_check = if app.serial_auto_scroll { "[X]" } else { "[ ]" };
     let crlf_check = if app.serial_add_newline { "[X]" } else { "[ ]" };
     let rx_hex = if app.serial_hex_mode_rx { "[X]" } else { "[ ]" };
@@ -254,8 +318,8 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         "[ ]"
     };
-    let option_row_style = |idx| {
-        if app.hover_serial_option == Some(idx) {
+    let option_row_style = |left, right| {
+        if app.hover_serial_option == Some(left) || app.hover_serial_option == Some(right) {
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .bg(CATPPUCCIN_MOCHA.selection_bg)
@@ -266,86 +330,42 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let toggles_text = vec![
-        Line::from(vec![
-            Span::styled(
-                format!("{} ", scroll_check),
-                Style::default().fg(CATPPUCCIN_MOCHA.accent),
-            ),
-            Span::styled(
-                tr("serial_auto_scroll", lang),
-                Style::default().fg(CATPPUCCIN_MOCHA.text),
-            ),
-            Span::styled("[s]", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-        ])
-        .style(option_row_style(0)),
-        Line::from(vec![
-            Span::styled(
-                format!("{} ", crlf_check),
-                Style::default().fg(CATPPUCCIN_MOCHA.accent),
-            ),
-            Span::styled(
-                tr("serial_send_newline", lang),
-                Style::default().fg(CATPPUCCIN_MOCHA.text),
-            ),
-            Span::styled("[n]", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-        ])
-        .style(option_row_style(1)),
-        Line::from(vec![
-            Span::styled(
-                format!("{} ", rx_hex),
-                Style::default().fg(CATPPUCCIN_MOCHA.accent),
-            ),
-            Span::styled(
-                tr("serial_hex_display", lang),
-                Style::default().fg(CATPPUCCIN_MOCHA.text),
-            ),
-            Span::styled("[h]", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-        ])
-        .style(option_row_style(2)),
-        Line::from(vec![
-            Span::styled(
-                format!("{} ", tx_hex),
-                Style::default().fg(CATPPUCCIN_MOCHA.accent),
-            ),
-            Span::styled(
-                tr("serial_hex_sending", lang),
-                Style::default().fg(CATPPUCCIN_MOCHA.text),
-            ),
-            Span::styled("[t]", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-        ])
-        .style(option_row_style(3)),
-        Line::from(vec![
-            Span::styled(
-                format!("{} ", recording),
-                Style::default().fg(CATPPUCCIN_MOCHA.accent),
-            ),
-            Span::styled(
-                if lang == "zh" {
-                    "时间线录制 "
-                } else {
-                    "Timeline Record "
-                },
-                Style::default().fg(CATPPUCCIN_MOCHA.text),
-            ),
-            Span::styled("[r]", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-        ])
-        .style(option_row_style(4)),
-        Line::from(vec![
-            Span::styled(
-                format!("{} ", replaying),
-                Style::default().fg(CATPPUCCIN_MOCHA.accent),
-            ),
-            Span::styled(
-                if lang == "zh" {
-                    "回放并解析 "
-                } else {
-                    "Replay Parse "
-                },
-                Style::default().fg(CATPPUCCIN_MOCHA.text),
-            ),
-            Span::styled("[y]", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-        ])
-        .style(option_row_style(5)),
+        compact_option_line(
+            monitor_check,
+            if lang == "zh" { "监视" } else { "MON" },
+            "m",
+            scroll_check,
+            if lang == "zh" { "滚动" } else { "Scroll" },
+            "s",
+            option_row_style(0, 1),
+        ),
+        compact_option_line(
+            crlf_check,
+            if lang == "zh" { "换行" } else { "NL" },
+            "n",
+            rx_hex,
+            if lang == "zh" { "RX HEX" } else { "RX HEX" },
+            "h",
+            option_row_style(2, 3),
+        ),
+        compact_option_line(
+            tx_hex,
+            if lang == "zh" { "TX HEX" } else { "TX HEX" },
+            "t",
+            recording,
+            if lang == "zh" { "录制" } else { "REC" },
+            "r",
+            option_row_style(4, 5),
+        ),
+        compact_option_line(
+            replaying,
+            if lang == "zh" { "回放" } else { "PLAY" },
+            "y",
+            "[ ]",
+            if lang == "zh" { "波特" } else { "Baud" },
+            "b",
+            option_row_style(6, 7),
+        ),
     ];
 
     f.render_widget(Paragraph::new(toggles_text).block(toggles_block), chunks[1]);
@@ -353,18 +373,6 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     draw_analysis_panel(f, app, chunks[2]);
 
     // 3. Quick Command Templates
-    let quick_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
-        .title(Span::styled(
-            tr("serial_quick_commands", lang),
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().bg(CATPPUCCIN_MOCHA.panel));
-
     let rows = vec![
         // Basic AT Commands (Blue)
         Row::new(vec![
@@ -513,17 +521,51 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         ]),
     ];
 
-    let rows = rows.into_iter().enumerate().map(|(idx, row)| {
-        if app.hover_serial_quick_command == Some(idx) {
-            row.style(
-                Style::default()
-                    .bg(CATPPUCCIN_MOCHA.selection_bg)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            row
-        }
-    });
+    let visible_quick_rows = chunks[3].height.saturating_sub(3) as usize;
+    let max_quick_scroll = rows.len().saturating_sub(visible_quick_rows);
+    app.serial_quick_scroll = app.serial_quick_scroll.min(max_quick_scroll);
+    let quick_title = if visible_quick_rows > 0 && rows.len() > visible_quick_rows {
+        let first = app.serial_quick_scroll + 1;
+        let last = (app.serial_quick_scroll + visible_quick_rows).min(rows.len());
+        format!(
+            "{} {}-{}/{} ",
+            tr("serial_quick_commands", lang),
+            first,
+            last,
+            rows.len()
+        )
+    } else {
+        tr("serial_quick_commands", lang).to_string()
+    };
+
+    let quick_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
+        .title(Span::styled(
+            quick_title,
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(CATPPUCCIN_MOCHA.panel));
+
+    let rows = rows
+        .into_iter()
+        .enumerate()
+        .skip(app.serial_quick_scroll)
+        .take(visible_quick_rows)
+        .map(|(idx, row)| {
+            if app.hover_serial_quick_command == Some(idx) {
+                row.style(
+                    Style::default()
+                        .bg(CATPPUCCIN_MOCHA.selection_bg)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                row
+            }
+        });
 
     let table = Table::new(
         rows,
@@ -539,6 +581,59 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     );
 
     f.render_widget(table, chunks[3]);
+}
+
+fn serial_notice_spinner(notice: &SerialNotice) -> &'static str {
+    const FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
+    let idx = ((notice.started_at.elapsed().as_millis() / 120) % FRAMES.len() as u128) as usize;
+    FRAMES[idx]
+}
+
+fn serial_notice_color(notice: &SerialNotice) -> ratatui::style::Color {
+    match notice.kind {
+        SerialNoticeKind::Info => CATPPUCCIN_MOCHA.info,
+        SerialNoticeKind::Success => CATPPUCCIN_MOCHA.success,
+        SerialNoticeKind::Warning => CATPPUCCIN_MOCHA.warning,
+    }
+}
+
+fn serial_notice_style(notice: &SerialNotice) -> Style {
+    Style::default()
+        .fg(serial_notice_color(notice))
+        .add_modifier(Modifier::BOLD)
+}
+
+fn compact_option_line<'a>(
+    left_check: &'a str,
+    left_label: &'a str,
+    left_key: &'a str,
+    right_check: &'a str,
+    right_label: &'a str,
+    right_key: &'a str,
+    style: Style,
+) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(
+            format!("{} ", left_check),
+            Style::default().fg(CATPPUCCIN_MOCHA.accent),
+        ),
+        Span::styled(left_label, Style::default().fg(CATPPUCCIN_MOCHA.text)),
+        Span::styled(
+            format!("[{}]", left_key),
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("{} ", right_check),
+            Style::default().fg(CATPPUCCIN_MOCHA.accent),
+        ),
+        Span::styled(right_label, Style::default().fg(CATPPUCCIN_MOCHA.text)),
+        Span::styled(
+            format!("[{}]", right_key),
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+        ),
+    ])
+    .style(style)
 }
 
 fn draw_analysis_panel(f: &mut Frame, app: &App, area: Rect) {

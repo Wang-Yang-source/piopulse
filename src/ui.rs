@@ -93,13 +93,7 @@ fn draw_workspace(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Render Tabs
     let lang = &app.tool_config.language;
-    let tab_titles = vec![
-        tr("tab_serial", lang),
-        tr("tab_plot", lang),
-        tr("tab_dash", lang),
-        tr("tab_flash", lang),
-        tr("tab_settings", lang),
-    ];
+    let tab_titles = tab_titles_for_width(lang, chunks[0].width);
 
     let active_index = match app.active_tab {
         ActiveTab::Serial => 0,
@@ -167,5 +161,29 @@ fn draw_workspace(f: &mut Frame, app: &mut App, area: Rect) {
             app.layout_zones.monitor_panel = chunks[1];
             widgets::draw(f, app, chunks[1]);
         }
+    }
+}
+
+pub fn tab_titles_for_width(lang: &str, width: u16) -> [&'static str; 5] {
+    use unicode_width::UnicodeWidthStr;
+
+    let full = [
+        tr("tab_serial", lang),
+        tr("tab_plot", lang),
+        tr("tab_dash", lang),
+        tr("tab_flash", lang),
+        tr("tab_settings", lang),
+    ];
+    let compact = [" [1] ", " [2] ", " [3] ", " [4] ", " [5] "];
+    let full_width: usize = full
+        .iter()
+        .map(|title| UnicodeWidthStr::width(*title))
+        .sum();
+    let separator_width = UnicodeWidthStr::width(" | ") * 4;
+
+    if full_width + separator_width <= width as usize {
+        full
+    } else {
+        compact
     }
 }

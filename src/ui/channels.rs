@@ -15,25 +15,28 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let summary_height = if area.height < 18 { 4 } else { 7 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(summary_height), // Production Summary
-            Constraint::Min(5),                 // Table
+            Constraint::Length(4), // Production Summary
+            Constraint::Min(5),    // Table
         ])
         .split(area);
+
+    app.layout_zones.flash_summary = chunks[0];
+    app.layout_zones.flash_device_table = chunks[1];
 
     draw_summary_dashboard(f, app, chunks[0]);
     draw_device_table(f, app, chunks[1]);
 }
 
-fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
+fn draw_empty_state(f: &mut Frame, app: &mut App, area: Rect) {
     let centered_area = if area.width < 76 || area.height < 14 {
         area
     } else {
         crate::ui::center_rect(65, 12, area)
     };
+    app.layout_zones.flash_empty_state = centered_area;
     let lang = &app.tool_config.language;
 
     let block = Block::default()
@@ -182,7 +185,6 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
         .filter(|c| c.finished && !c.success)
         .count();
 
-    let compact = area.height < 7 || area.width < 95;
     let mut summary_lines = vec![Line::from(vec![
         Span::raw(tr("flash_devices_count", lang)),
         Span::styled(
@@ -221,78 +223,36 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
         ),
     ])];
 
-    if !compact {
-        summary_lines.extend([
-            Line::from(vec![
-                Span::styled(
-                    if lang == "zh" {
-                        "  产线策略: "
-                    } else {
-                        "  Production: "
-                    },
-                    Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-                ),
-                Span::styled(
-                    format!(
-                        "verify={}  blank={}  erase={}  incremental={}",
-                        app.config.verify_method,
-                        enabled_label(app.config.blank_check, lang),
-                        app.config.erase_mode,
-                        enabled_label(app.config.incremental_programming, lang)
-                    ),
-                    Style::default().fg(CATPPUCCIN_MOCHA.text),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    if lang == "zh" {
-                        "  安全/追溯: "
-                    } else {
-                        "  Security/Trace: "
-                    },
-                    Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-                ),
-                Span::styled(
-                    format!(
-                        "secure_boot={}  flash_enc={}  lock={}  fw={}  lot={}",
-                        enabled_label(app.config.secure_boot, lang),
-                        enabled_label(app.config.flash_encryption, lang),
-                        enabled_label(app.config.lock_after_flash, lang),
-                        app.config.firmware_version,
-                        app.config.lot_code
-                    ),
-                    Style::default().fg(CATPPUCCIN_MOCHA.primary),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    if lang == "zh" {
-                        "  集成: "
-                    } else {
-                        "  Integration: "
-                    },
-                    Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-                ),
-                Span::styled(
-                    format!(
-                        "MES={}  label={}  QA={}",
-                        if app.config.mes_endpoint.trim().is_empty() {
-                            if lang == "zh" {
-                                "未配置"
-                            } else {
-                                "not configured"
-                            }
-                        } else {
-                            app.config.mes_endpoint.as_str()
-                        },
-                        app.config.label_template,
-                        app.config.qa_test_script
-                    ),
-                    Style::default().fg(CATPPUCCIN_MOCHA.text),
-                ),
-            ]),
-        ]);
-    }
+    summary_lines.push(Line::from(vec![
+        Span::raw("  "),
+        flash_action_span(0, app.hover_flash_action, lang),
+        Span::raw("  "),
+        flash_action_span(1, app.hover_flash_action, lang),
+        Span::raw("  "),
+        flash_action_span(2, app.hover_flash_action, lang),
+    ]));
+
+    summary_lines.push(Line::from(vec![
+        Span::styled(
+            if lang == "zh" {
+                "  策略 "
+            } else {
+                "  Policy "
+            },
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+        ),
+        Span::styled(
+            format!(
+                "verify:{} blank:{} erase:{} lock:{} lot:{}",
+                app.config.verify_method,
+                enabled_label(app.config.blank_check, lang),
+                app.config.erase_mode,
+                enabled_label(app.config.lock_after_flash, lang),
+                app.config.lot_code
+            ),
+            Style::default().fg(CATPPUCCIN_MOCHA.text),
+        ),
+    ]));
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -313,12 +273,23 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
+fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
     let lang = &app.tool_config.language;
     let compact = area.width < 120;
     let mut rows = Vec::new();
-    for (idx, channel) in app.channels.iter().enumerate() {
+    let visible_rows = area.height.saturating_sub(3) as usize;
+    let max_scroll = app.channels.len().saturating_sub(visible_rows);
+    app.flash_table_scroll = app.flash_table_scroll.min(max_scroll);
+
+    for (idx, channel) in app
+        .channels
+        .iter()
+        .enumerate()
+        .skip(app.flash_table_scroll)
+        .take(visible_rows)
+    {
         let is_selected = idx == app.selected_channel_idx;
+        let is_hovered = app.hover_flash_row == Some(idx);
 
         let port_prefix = if is_selected { "> " } else { "  " };
         let port_text = format!("{}{}", port_prefix, channel.port);
@@ -399,6 +370,8 @@ fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
 
         let row_style = if is_selected {
             Style::default().bg(mocha::SURFACE0)
+        } else if is_hovered {
+            Style::default().bg(CATPPUCCIN_MOCHA.selection_bg)
         } else if idx % 2 == 0 {
             Style::default().bg(mocha::MANTLE)
         } else {
@@ -507,7 +480,12 @@ fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
                 .title(Span::styled(
-                    tr("flash_devices_title", lang),
+                    flash_table_title(
+                        lang,
+                        app.flash_table_scroll,
+                        visible_rows,
+                        app.channels.len(),
+                    ),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),
@@ -521,6 +499,43 @@ fn make_progress_bar(pct: u8, width: usize) -> String {
     let filled = (pct as usize * width) / 100;
     let empty = width - filled;
     format!("[{}{}] {:>3}%", "█".repeat(filled), "░".repeat(empty), pct)
+}
+
+pub fn flash_action_label(idx: usize, lang: &str) -> &'static str {
+    match (idx, lang == "zh") {
+        (0, true) => "[开始]",
+        (0, false) => "[Start]",
+        (1, true) => "[扫描]",
+        (1, false) => "[Scan]",
+        (2, true) => "[配置]",
+        (2, false) => "[Config]",
+        _ => "",
+    }
+}
+
+fn flash_action_span(idx: usize, hover: Option<usize>, lang: &str) -> Span<'static> {
+    let style = if hover == Some(idx) {
+        Style::default()
+            .fg(CATPPUCCIN_MOCHA.text)
+            .bg(CATPPUCCIN_MOCHA.selection_bg)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(CATPPUCCIN_MOCHA.accent)
+            .add_modifier(Modifier::BOLD)
+    };
+    Span::styled(flash_action_label(idx, lang), style)
+}
+
+fn flash_table_title(lang: &str, scroll: usize, visible_rows: usize, total: usize) -> String {
+    let base = tr("flash_devices_title", lang);
+    if total > visible_rows && visible_rows > 0 {
+        let first = scroll + 1;
+        let last = (scroll + visible_rows).min(total);
+        format!("{} {}-{}/{} ", base, first, last, total)
+    } else {
+        base.to_string()
+    }
 }
 
 fn enabled_label(enabled: bool, lang: &str) -> &'static str {

@@ -21,6 +21,9 @@ pub struct LayoutZones {
     pub plotter_port_selector: Rect,
     pub port_menu_modal: Rect,
     pub widget_add_modal: Rect,
+    pub flash_summary: Rect,
+    pub flash_device_table: Rect,
+    pub flash_empty_state: Rect,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +115,21 @@ pub struct SerialParseSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SerialNoticeKind {
+    Info,
+    Success,
+    Warning,
+}
+
+#[derive(Debug, Clone)]
+pub struct SerialNotice {
+    pub message: String,
+    pub kind: SerialNoticeKind,
+    pub started_at: Instant,
+    pub expires_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveTab {
     Serial,
     Plotter,
@@ -186,6 +204,10 @@ pub struct App {
     pub hover_serial_port_info: Option<usize>,
     pub hover_serial_option: Option<usize>,
     pub hover_serial_quick_command: Option<usize>,
+    pub serial_quick_scroll: usize,
+    pub hover_flash_row: Option<usize>,
+    pub hover_flash_action: Option<usize>,
+    pub flash_table_scroll: usize,
     pub hover_plotter_header_action: Option<usize>,
     pub hover_plotter_quick_command: Option<usize>,
     pub hover_dashboard_empty_action: Option<DashboardEmptyAction>,
@@ -244,6 +266,7 @@ pub struct App {
     pub serial_hex_mode_rx: bool,
     pub serial_hex_mode_tx: bool,
     pub serial_auto_scroll: bool,
+    pub serial_monitor_enabled: bool,
     pub serial_add_newline: bool,
     pub serial_baud_rate: u32,
     pub serial_send_history: Vec<String>,
@@ -262,6 +285,7 @@ pub struct App {
         std::collections::HashMap<String, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     pub serial_monitor_baud_rates: std::collections::HashMap<String, u32>,
     pub serial_pending_monitors: std::collections::HashSet<String>,
+    pub serial_notice: Option<SerialNotice>,
     pub worker_tx: Option<tokio::sync::mpsc::Sender<crate::worker::WorkerMessage>>,
 }
 
@@ -308,6 +332,10 @@ impl App {
             hover_serial_port_info: None,
             hover_serial_option: None,
             hover_serial_quick_command: None,
+            serial_quick_scroll: 0,
+            hover_flash_row: None,
+            hover_flash_action: None,
+            flash_table_scroll: 0,
             hover_plotter_header_action: None,
             hover_plotter_quick_command: None,
             hover_dashboard_empty_action: None,
@@ -358,6 +386,7 @@ impl App {
             serial_hex_mode_rx: false,
             serial_hex_mode_tx: false,
             serial_auto_scroll: true,
+            serial_monitor_enabled: true,
             serial_add_newline: true,
             serial_baud_rate: 115200,
             serial_send_history: Vec::new(),
@@ -375,6 +404,7 @@ impl App {
             serial_tx_senders: std::collections::HashMap::new(),
             serial_monitor_baud_rates: std::collections::HashMap::new(),
             serial_pending_monitors: std::collections::HashSet::new(),
+            serial_notice: None,
             worker_tx: None,
         };
 
@@ -430,12 +460,23 @@ impl App {
             if self.selected_channel_idx >= self.channels.len() {
                 self.selected_channel_idx = 0;
             }
+            self.flash_table_scroll = self.flash_table_scroll.min(
+                self.channels
+                    .len()
+                    .saturating_sub(self.layout_zones.flash_device_table.height as usize),
+            );
         }
     }
 
     pub fn start_flashing(&mut self, tx: tokio::sync::mpsc::Sender<WorkerMessage>) {
         if self.is_flashing || self.channels.is_empty() {
             return;
+        }
+
+        if self.serial_monitor_enabled || !self.serial_tx_senders.is_empty() {
+            self.serial_monitor_enabled = false;
+            self.stop_serial_monitors("Stopped serial monitor before flashing.");
+            std::thread::sleep(Duration::from_millis(150));
         }
 
         self.is_flashing = true;
@@ -492,16 +533,37 @@ impl App {
         self.update_elapsed_time();
         self.update_serial_monitoring();
         self.update_serial_playback();
+        self.update_serial_notice();
+    }
+
+    fn update_serial_notice(&mut self) {
+        if self
+            .serial_notice
+            .as_ref()
+            .is_some_and(|notice| Instant::now() >= notice.expires_at)
+        {
+            self.serial_notice = None;
+        }
+    }
+
+    pub fn show_serial_notice(&mut self, message: impl Into<String>, kind: SerialNoticeKind) {
+        let now = Instant::now();
+        self.serial_notice = Some(SerialNotice {
+            message: message.into(),
+            kind,
+            started_at: now,
+            expires_at: now + Duration::from_millis(2600),
+        });
     }
 
     pub fn update_serial_monitoring(&mut self) {
         if self.is_flashing {
-            let keys: Vec<String> = self.serial_tx_senders.keys().cloned().collect();
-            for port in keys {
-                self.serial_tx_senders.remove(&port);
-                self.serial_monitor_baud_rates.remove(&port);
-            }
-            self.serial_pending_monitors.clear();
+            self.stop_serial_monitors("Serial monitor closed while flashing is active.");
+            return;
+        }
+
+        if !self.serial_monitor_enabled {
+            self.stop_serial_monitors("Serial monitor paused.");
             return;
         }
 
@@ -524,8 +586,16 @@ impl App {
                         "Restarting Serial Monitor for {} at {} bps.",
                         port, self.serial_baud_rate
                     ));
+                    self.show_serial_notice(
+                        format!("Restarting {} at {} bps", port, self.serial_baud_rate),
+                        SerialNoticeKind::Info,
+                    );
                 } else {
                     self.log(format!("Closed Serial Monitor for {}.", port));
+                    self.show_serial_notice(
+                        format!("Released serial port {}", port),
+                        SerialNoticeKind::Success,
+                    );
                 }
             }
         }
@@ -553,6 +623,33 @@ impl App {
         } else {
             let idx = self.selected_channel_idx.min(self.channels.len() - 1);
             Some(self.channels[idx].port.clone())
+        }
+    }
+
+    pub fn toggle_serial_monitor(&mut self) {
+        self.serial_monitor_enabled = !self.serial_monitor_enabled;
+        if self.serial_monitor_enabled {
+            self.log("Serial monitor resumed.");
+            self.show_serial_notice("Serial monitor resumed", SerialNoticeKind::Info);
+        } else {
+            let had_monitor =
+                !self.serial_tx_senders.is_empty() || !self.serial_pending_monitors.is_empty();
+            self.stop_serial_monitors("Serial monitor paused and port released.");
+            if !had_monitor {
+                self.show_serial_notice("Serial monitor paused", SerialNoticeKind::Warning);
+            }
+        }
+    }
+
+    fn stop_serial_monitors(&mut self, reason: &str) {
+        let had_monitor =
+            !self.serial_tx_senders.is_empty() || !self.serial_pending_monitors.is_empty();
+        self.serial_tx_senders.clear();
+        self.serial_monitor_baud_rates.clear();
+        self.serial_pending_monitors.clear();
+        if had_monitor {
+            self.log(reason);
+            self.show_serial_notice(reason, SerialNoticeKind::Success);
         }
     }
 
@@ -692,12 +789,20 @@ impl App {
                 self.serial_pending_monitors.remove(&port);
                 self.serial_monitor_baud_rates
                     .insert(port.clone(), baud_rate);
-                self.serial_tx_senders.insert(port, sender);
+                self.serial_tx_senders.insert(port.clone(), sender);
+                self.show_serial_notice(
+                    format!("Monitoring {} at {} bps", port, baud_rate),
+                    SerialNoticeKind::Info,
+                );
             }
             WorkerMessage::MonitorStopped { port } => {
                 self.serial_pending_monitors.remove(&port);
                 self.serial_monitor_baud_rates.remove(&port);
                 self.serial_tx_senders.remove(&port);
+                self.show_serial_notice(
+                    format!("Serial port {} released", port),
+                    SerialNoticeKind::Success,
+                );
             }
         }
     }
@@ -932,9 +1037,15 @@ impl App {
     pub fn cycle_serial_baud_rate(&mut self) {
         self.serial_baud_rate = next_serial_baud_rate(self.serial_baud_rate);
         if let Some(port) = self.get_selected_port() {
-            self.serial_tx_senders.remove(&port);
-            self.serial_monitor_baud_rates.remove(&port);
-            self.serial_pending_monitors.remove(&port);
+            let had_monitor = self.serial_tx_senders.remove(&port).is_some()
+                || self.serial_monitor_baud_rates.remove(&port).is_some()
+                || self.serial_pending_monitors.remove(&port);
+            if had_monitor {
+                self.show_serial_notice(
+                    format!("Restarting {} at {} bps", port, self.serial_baud_rate),
+                    SerialNoticeKind::Info,
+                );
+            }
         }
         self.log(format!("Baud rate set to {} bps.", self.serial_baud_rate));
     }
@@ -1017,15 +1128,8 @@ impl App {
 
         let relative_col = col.saturating_sub(area.x) as usize;
         let mut cursor = UnicodeWidthStr::width(crate::ui::tr("plot_title", lang)) + 2;
-        let items = [
-            (if lang == "zh" { "端口" } else { "Port" }, selected_port),
-            (if lang == "zh" { "协议" } else { "Protocol" }, protocol),
-            (if lang == "zh" { "视图" } else { "View" }, view),
-            (
-                if lang == "zh" { "状态" } else { "State" },
-                state.to_string(),
-            ),
-        ];
+        let items =
+            plotter_header_items(lang, true, selected_port, protocol, view, state.to_string());
 
         for (idx, (label, value)) in items.iter().enumerate() {
             let width = UnicodeWidthStr::width(format!(" {}: {} ", label, value).as_str());
@@ -1080,11 +1184,47 @@ impl App {
         (mode_start..mode_end).contains(&relative_col)
     }
 
+    pub fn flash_summary_action_at(&self, col: u16, row: u16) -> Option<usize> {
+        let area = self.layout_zones.flash_summary;
+        if !self.is_inside_rect(col, row, area) || row != area.y + 2 {
+            return None;
+        }
+
+        use unicode_width::UnicodeWidthStr;
+        let lang = &self.tool_config.language;
+        let relative_col = col.saturating_sub(area.x + 1) as usize;
+        let mut cursor = 2;
+        for idx in 0..3 {
+            let label = crate::ui::channels::flash_action_label(idx, lang);
+            let width = UnicodeWidthStr::width(label);
+            if (cursor..cursor + width).contains(&relative_col) {
+                return Some(idx);
+            }
+            cursor += width + 2;
+        }
+        None
+    }
+
+    pub fn flash_table_row_at(&self, row: u16) -> Option<usize> {
+        let area = self.layout_zones.flash_device_table;
+        if row < area.y + 2 || row >= area.y + area.height.saturating_sub(1) {
+            return None;
+        }
+
+        let visible_row = row.saturating_sub(area.y + 2) as usize;
+        let idx = self.flash_table_scroll + visible_row;
+        if idx < self.channels.len() {
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
     pub fn handle_mouse_click(
         &mut self,
         col: u16,
         row: u16,
-        _tx: tokio::sync::mpsc::Sender<WorkerMessage>,
+        tx: tokio::sync::mpsc::Sender<WorkerMessage>,
     ) -> bool {
         if self.show_port_menu {
             if !self.is_inside_rect(col, row, self.layout_zones.port_menu_modal) {
@@ -1243,6 +1383,46 @@ impl App {
             return true;
         }
 
+        if self.active_tab == ActiveTab::Flasher {
+            if self.channels.is_empty() {
+                if self.is_inside_rect(col, row, self.layout_zones.flash_empty_state) {
+                    self.scan_ports();
+                    self.log("Manual port scan requested from flasher empty state.");
+                    return true;
+                }
+            }
+
+            if self.is_inside_rect(col, row, self.layout_zones.flash_summary) {
+                if let Some(action) = self.flash_summary_action_at(col, row) {
+                    match action {
+                        0 => self.start_flashing(tx.clone()),
+                        1 => {
+                            if self.is_flashing {
+                                self.log("Cannot rescan while flashing is active.");
+                            } else {
+                                self.scan_ports();
+                                self.log("Manual port scan requested from flasher dashboard.");
+                            }
+                        }
+                        _ => {
+                            self.active_tab = ActiveTab::Configuration;
+                        }
+                    }
+                }
+                return true;
+            }
+
+            if self.is_inside_rect(col, row, self.layout_zones.flash_device_table) {
+                if let Some(idx) = self.flash_table_row_at(row) {
+                    self.selected_channel_idx = idx;
+                    if let Some(port) = self.get_selected_port() {
+                        self.log(format!("Selected flash channel: {}.", port));
+                    }
+                }
+                return true;
+            }
+        }
+
         // Clicks inside the config table to select/edit field
         if clicked_config_table {
             let rect = self.layout_zones.config_table;
@@ -1293,9 +1473,9 @@ impl App {
         // 3. Serial Settings & Toggles Check
         if self.active_tab == ActiveTab::Serial {
             if self.is_inside_rect(col, row, self.layout_zones.serial_options) {
-                let click_row = row.saturating_sub(self.layout_zones.serial_options.y + 1);
-                match click_row {
-                    0 => {
+                match self.serial_option_at(col, row) {
+                    0 => self.toggle_serial_monitor(),
+                    1 => {
                         self.serial_auto_scroll = !self.serial_auto_scroll;
                         self.log(format!(
                             "Auto Scroll: {}",
@@ -1306,7 +1486,7 @@ impl App {
                             }
                         ));
                     }
-                    1 => {
+                    2 => {
                         self.serial_add_newline = !self.serial_add_newline;
                         self.log(format!(
                             "Send Newline: {}",
@@ -1317,7 +1497,7 @@ impl App {
                             }
                         ));
                     }
-                    2 => {
+                    3 => {
                         self.serial_hex_mode_rx = !self.serial_hex_mode_rx;
                         self.log(format!(
                             "Hex RX Mode: {}",
@@ -1328,7 +1508,7 @@ impl App {
                             }
                         ));
                     }
-                    3 => {
+                    4 => {
                         self.serial_hex_mode_tx = !self.serial_hex_mode_tx;
                         self.log(format!(
                             "Hex TX Mode: {}",
@@ -1339,14 +1519,15 @@ impl App {
                             }
                         ));
                     }
-                    4 => self.toggle_serial_recording(),
-                    5 => {
+                    5 => self.toggle_serial_recording(),
+                    6 => {
                         if self.serial_playback_active {
                             self.stop_serial_timeline_playback();
                         } else {
                             self.start_serial_timeline_playback();
                         }
                     }
+                    7 => self.cycle_serial_baud_rate(),
                     _ => {}
                 }
                 return true;
@@ -1364,8 +1545,8 @@ impl App {
             }
 
             if self.is_inside_rect(col, row, self.layout_zones.serial_quick_commands) {
-                let command_row =
-                    row.saturating_sub(self.layout_zones.serial_quick_commands.y + 2) as usize;
+                let command_row = self.serial_quick_scroll
+                    + row.saturating_sub(self.layout_zones.serial_quick_commands.y + 2) as usize;
                 if let Some(command) = serial_quick_commands().get(command_row) {
                     self.submit_serial_command(command);
                 }
@@ -1598,19 +1779,31 @@ impl App {
                 }
 
                 if self.is_inside_rect(col, row, self.layout_zones.serial_options) {
-                    let idx = row.saturating_sub(self.layout_zones.serial_options.y + 1) as usize;
-                    if idx < 6 {
+                    let idx = self.serial_option_at(col, row);
+                    if idx < 8 {
                         self.hover_serial_option = Some(idx);
                     }
                     return;
                 }
 
                 if self.is_inside_rect(col, row, self.layout_zones.serial_quick_commands) {
-                    let idx =
-                        row.saturating_sub(self.layout_zones.serial_quick_commands.y + 2) as usize;
+                    let idx = self.serial_quick_scroll
+                        + row.saturating_sub(self.layout_zones.serial_quick_commands.y + 2)
+                            as usize;
                     if idx < serial_quick_commands().len() {
                         self.hover_serial_quick_command = Some(idx);
                     }
+                }
+            }
+            ActiveTab::Flasher => {
+                if self.is_inside_rect(col, row, self.layout_zones.flash_summary) {
+                    self.hover_flash_action = self.flash_summary_action_at(col, row);
+                    return;
+                }
+
+                if self.is_inside_rect(col, row, self.layout_zones.flash_device_table) {
+                    self.hover_flash_row = self.flash_table_row_at(row);
+                    return;
                 }
             }
             ActiveTab::Plotter => {
@@ -1656,14 +1849,50 @@ impl App {
         self.hover_serial_port_info = None;
         self.hover_serial_option = None;
         self.hover_serial_quick_command = None;
+        self.hover_flash_row = None;
+        self.hover_flash_action = None;
         self.hover_plotter_header_action = None;
         self.hover_plotter_quick_command = None;
         self.hover_dashboard_empty_action = None;
         self.hover_widget_control = None;
     }
 
-    pub fn handle_mouse_scroll(&mut self, up: bool) {
+    pub fn handle_mouse_scroll(&mut self, up: bool, col: u16, row: u16) {
         match self.active_tab {
+            ActiveTab::Serial => {
+                if self.is_inside_rect(col, row, self.layout_zones.serial_quick_commands) {
+                    let visible_rows = self
+                        .layout_zones
+                        .serial_quick_commands
+                        .height
+                        .saturating_sub(3) as usize;
+                    let max_scroll = serial_quick_commands().len().saturating_sub(visible_rows);
+                    if up {
+                        self.serial_quick_scroll = self.serial_quick_scroll.saturating_sub(1);
+                    } else {
+                        self.serial_quick_scroll =
+                            self.serial_quick_scroll.saturating_add(1).min(max_scroll);
+                    }
+                    self.hover_serial_quick_command = None;
+                }
+            }
+            ActiveTab::Flasher => {
+                if self.is_inside_rect(col, row, self.layout_zones.flash_device_table) {
+                    let visible_rows = self
+                        .layout_zones
+                        .flash_device_table
+                        .height
+                        .saturating_sub(3) as usize;
+                    let max_scroll = self.channels.len().saturating_sub(visible_rows);
+                    if up {
+                        self.flash_table_scroll = self.flash_table_scroll.saturating_sub(1);
+                    } else {
+                        self.flash_table_scroll =
+                            self.flash_table_scroll.saturating_add(1).min(max_scroll);
+                    }
+                    self.hover_flash_row = self.flash_table_row_at(row);
+                }
+            }
             ActiveTab::Plotter => {
                 self.zoom_plotter_view(up);
             }
@@ -1697,7 +1926,6 @@ impl App {
                     }
                 }
             }
-            _ => {}
         }
     }
 
@@ -1706,6 +1934,14 @@ impl App {
             && col < (rect.x + rect.width)
             && row >= rect.y
             && row < (rect.y + rect.height)
+    }
+
+    fn serial_option_at(&self, col: u16, row: u16) -> usize {
+        let area = self.layout_zones.serial_options;
+        let row_idx = row.saturating_sub(area.y + 1) as usize;
+        let mid = area.x + area.width / 2;
+        let col_idx = if col >= mid { 1 } else { 0 };
+        row_idx.saturating_mul(2).saturating_add(col_idx)
     }
 }
 
@@ -1851,24 +2087,44 @@ pub fn tab_index_at(tabs_area: Rect, col: u16, row: u16, lang: &str) -> Option<u
 
     let relative_col = col.saturating_sub(tabs_area.x) as usize;
     use unicode_width::UnicodeWidthStr;
-    let titles = [
-        crate::ui::tr("tab_serial", lang),
-        crate::ui::tr("tab_plot", lang),
-        crate::ui::tr("tab_dash", lang),
-        crate::ui::tr("tab_flash", lang),
-        crate::ui::tr("tab_settings", lang),
-    ];
+    let titles = crate::ui::tab_titles_for_width(lang, tabs_area.width);
 
     let mut current_x = 0;
     for (idx, title) in titles.iter().enumerate() {
         let width = UnicodeWidthStr::width(*title);
-        if (current_x..=current_x + width).contains(&relative_col) {
+        if (current_x..current_x + width).contains(&relative_col) {
             return Some(idx);
         }
         current_x += width + 3;
     }
 
     None
+}
+
+pub fn plotter_header_items(
+    lang: &str,
+    compact: bool,
+    selected_port: String,
+    protocol: String,
+    view: String,
+    state: String,
+) -> [(String, String); 4] {
+    let labels = if compact && lang == "zh" {
+        ["端口", "协议(M)", "视图(V)", "状态(S)"]
+    } else if compact {
+        ["Port", "Proto(M)", "View(V)", "State(S)"]
+    } else if lang == "zh" {
+        ["端口", "协议", "视图", "状态"]
+    } else {
+        ["Port", "Protocol", "View", "State"]
+    };
+
+    [
+        (labels[0].to_string(), selected_port),
+        (labels[1].to_string(), protocol),
+        (labels[2].to_string(), view),
+        (labels[3].to_string(), state),
+    ]
 }
 
 pub fn encode_serial_tx(input: &str, hex_mode: bool, add_newline: bool) -> Result<Vec<u8>, String> {
@@ -2122,11 +2378,140 @@ mod tests {
         app.handle_mouse_move(12, 6);
         assert_eq!(app.hover_serial_port_info, Some(0));
 
-        app.handle_mouse_move(32, 8);
+        app.handle_mouse_move(32, 7);
         assert_eq!(app.hover_serial_option, Some(2));
 
         app.handle_mouse_move(52, 10);
         assert_eq!(app.hover_serial_quick_command, Some(3));
+
+        let _ = std::fs::remove_file("test_project_config.json");
+    }
+
+    #[test]
+    fn test_serial_compact_option_grid_clicks_columns() {
+        let mut app = App::new("test_project_config.json".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        app.active_tab = ActiveTab::Serial;
+        app.layout_zones.serial_options = ratatui::layout::Rect::new(30, 5, 24, 8);
+
+        assert!(app.serial_monitor_enabled);
+        assert!(app.handle_mouse_click(32, 6, tx.clone()));
+        assert!(!app.serial_monitor_enabled);
+
+        assert!(app.serial_add_newline);
+        assert!(app.handle_mouse_click(32, 7, tx.clone()));
+        assert!(!app.serial_add_newline);
+
+        assert!(!app.serial_hex_mode_rx);
+        assert!(app.handle_mouse_click(45, 7, tx));
+        assert!(app.serial_hex_mode_rx);
+
+        let _ = std::fs::remove_file("test_project_config.json");
+    }
+
+    #[test]
+    fn test_serial_monitor_stop_sets_tui_notice() {
+        let mut app = App::new("test_project_config.json".to_string());
+        let (serial_tx, _serial_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.serial_tx_senders.insert("COM3".to_string(), serial_tx);
+        app.serial_monitor_baud_rates
+            .insert("COM3".to_string(), 115200);
+
+        app.toggle_serial_monitor();
+
+        assert!(!app.serial_monitor_enabled);
+        assert!(app.serial_tx_senders.is_empty());
+        let notice = app.serial_notice.as_ref().expect("missing serial notice");
+        assert_eq!(notice.kind, SerialNoticeKind::Success);
+        assert!(notice.message.contains("released"));
+
+        app.serial_notice.as_mut().unwrap().expires_at = Instant::now() - Duration::from_millis(1);
+        app.tick();
+        assert!(app.serial_notice.is_none());
+
+        let _ = std::fs::remove_file("test_project_config.json");
+    }
+
+    #[test]
+    fn test_worker_monitor_stopped_sets_release_notice() {
+        let mut app = App::new("test_project_config.json".to_string());
+
+        app.handle_worker_message(crate::worker::WorkerMessage::MonitorStopped {
+            port: "COM4".to_string(),
+        });
+
+        let notice = app.serial_notice.as_ref().expect("missing serial notice");
+        assert_eq!(notice.kind, SerialNoticeKind::Success);
+        assert!(notice.message.contains("COM4"));
+        assert!(notice.message.contains("released"));
+
+        let _ = std::fs::remove_file("test_project_config.json");
+    }
+
+    #[test]
+    fn test_serial_quick_commands_scroll_with_mouse_wheel() {
+        let mut app = App::new("test_project_config.json".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        app.active_tab = ActiveTab::Serial;
+        app.layout_zones.serial_quick_commands = ratatui::layout::Rect::new(50, 5, 30, 6);
+
+        app.handle_mouse_scroll(false, 52, 8);
+        app.handle_mouse_scroll(false, 52, 8);
+        assert_eq!(app.serial_quick_scroll, 2);
+
+        app.handle_mouse_move(52, 7);
+        assert_eq!(app.hover_serial_quick_command, Some(2));
+
+        assert!(app.handle_mouse_click(52, 7, tx));
+        assert!(app.logs.iter().any(|line| line.contains("[TX] ATI")));
+
+        let _ = std::fs::remove_file("test_project_config.json");
+    }
+
+    #[test]
+    fn test_flasher_table_scroll_hover_and_click_selects_channel() {
+        let mut app = App::new("test_project_config.json".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        app.active_tab = ActiveTab::Flasher;
+        app.layout_zones.flash_device_table = ratatui::layout::Rect::new(0, 5, 80, 7);
+        app.channels = (0..8)
+            .map(|idx| {
+                Channel::new(crate::worker::DetectedPort {
+                    name: format!("COM{}", idx),
+                    vid: None,
+                    pid: None,
+                    product: None,
+                    manufacturer: None,
+                })
+            })
+            .collect();
+
+        app.handle_mouse_scroll(false, 10, 8);
+        app.handle_mouse_scroll(false, 10, 8);
+        assert_eq!(app.flash_table_scroll, 2);
+
+        app.handle_mouse_move(10, 7);
+        assert_eq!(app.hover_flash_row, Some(2));
+
+        assert!(app.handle_mouse_click(10, 8, tx));
+        assert_eq!(app.selected_channel_idx, 3);
+
+        let _ = std::fs::remove_file("test_project_config.json");
+    }
+
+    #[test]
+    fn test_flasher_summary_config_action_is_clickable() {
+        let mut app = App::new("test_project_config.json".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        app.active_tab = ActiveTab::Flasher;
+        app.layout_zones.flash_summary = ratatui::layout::Rect::new(0, 0, 80, 4);
+
+        assert_eq!(app.flash_summary_action_at(4, 2), Some(0));
+        assert_eq!(app.flash_summary_action_at(13, 2), Some(1));
+        assert_eq!(app.flash_summary_action_at(22, 2), Some(2));
+
+        assert!(app.handle_mouse_click(22, 2, tx));
+        assert_eq!(app.active_tab, ActiveTab::Configuration);
 
         let _ = std::fs::remove_file("test_project_config.json");
     }
@@ -2192,14 +2577,33 @@ mod tests {
 
     #[test]
     fn test_top_tabs_select_on_mouse_hover() {
+        use unicode_width::UnicodeWidthStr;
+
         let mut app = App::new("test_project_config.json".to_string());
         app.layout_zones.tabs = ratatui::layout::Rect::new(0, 3, 80, 3);
 
         app.handle_mouse_move(0, 3);
         assert_eq!(app.hover_tab, Some(0));
 
-        let tab_plot_x = crate::ui::tr("tab_serial", &app.tool_config.language).len() + 3;
+        let tab_plot_x =
+            UnicodeWidthStr::width(crate::ui::tr("tab_serial", &app.tool_config.language)) + 3;
         app.handle_mouse_move(tab_plot_x as u16, 3);
+        assert_eq!(app.hover_tab, Some(1));
+
+        let _ = std::fs::remove_file("test_project_config.json");
+    }
+
+    #[test]
+    fn test_top_tabs_compact_mode_uses_numbers_only() {
+        let mut app = App::new("test_project_config.json".to_string());
+        app.layout_zones.tabs = ratatui::layout::Rect::new(0, 3, 32, 2);
+
+        assert_eq!(
+            crate::ui::tab_titles_for_width(&app.tool_config.language, 32),
+            [" [1] ", " [2] ", " [3] ", " [4] ", " [5] "]
+        );
+
+        app.handle_mouse_move(8, 3);
         assert_eq!(app.hover_tab, Some(1));
 
         let _ = std::fs::remove_file("test_project_config.json");
@@ -2214,10 +2618,22 @@ mod tests {
         app.active_tab = ActiveTab::Plotter;
         app.layout_zones.plotter_header = ratatui::layout::Rect::new(0, 5, 120, 4);
 
-        let lang = &app.tool_config.language;
-        let mut cursor = UnicodeWidthStr::width(crate::ui::tr("plot_title", lang)) + 2;
-        cursor += UnicodeWidthStr::width(" Port: NONE ") + 2;
-        cursor += UnicodeWidthStr::width(" Protocol: FireWater ") + 2;
+        let lang = app.tool_config.language.clone();
+        let items = plotter_header_items(
+            &lang,
+            true,
+            "NONE".to_string(),
+            "FireWater".to_string(),
+            "Waveform".to_string(),
+            if lang == "zh" {
+                "运行中".to_string()
+            } else {
+                "RUNNING".to_string()
+            },
+        );
+        let mut cursor = UnicodeWidthStr::width(crate::ui::tr("plot_title", &lang)) + 2;
+        cursor += UnicodeWidthStr::width(format!(" {}: {} ", items[0].0, items[0].1).as_str()) + 2;
+        cursor += UnicodeWidthStr::width(format!(" {}: {} ", items[1].0, items[1].1).as_str()) + 2;
 
         let protocol_before = app.vofa_mode;
         let view_before = app.plotter_mode;
@@ -2226,12 +2642,57 @@ mod tests {
         assert_eq!(app.vofa_mode, protocol_before);
         assert_ne!(app.plotter_mode, view_before);
 
-        let view_width = UnicodeWidthStr::width(" View: BarChart ");
+        let after_view_items = plotter_header_items(
+            &lang,
+            true,
+            "NONE".to_string(),
+            "FireWater".to_string(),
+            "BarChart".to_string(),
+            items[3].1.clone(),
+        );
+        let view_width = UnicodeWidthStr::width(
+            format!(" {}: {} ", after_view_items[2].0, after_view_items[2].1).as_str(),
+        );
         let state_x = cursor + view_width + 2 + 1;
         let view_after = app.plotter_mode;
         assert!(app.handle_mouse_click(state_x as u16, 5, tx.clone()));
         assert_eq!(app.plotter_mode, view_after);
         assert!(!app.plotter_active);
+
+        let _ = std::fs::remove_file("test_project_config.json");
+    }
+
+    #[test]
+    fn test_plotter_header_compact_labels_keep_click_bounds() {
+        use unicode_width::UnicodeWidthStr;
+
+        let mut app = App::new("test_project_config.json".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        app.active_tab = ActiveTab::Plotter;
+        app.layout_zones.plotter_header = ratatui::layout::Rect::new(0, 5, 80, 3);
+
+        let lang = &app.tool_config.language;
+        let items = plotter_header_items(
+            lang,
+            true,
+            "NONE".to_string(),
+            "FireWater".to_string(),
+            "Waveform".to_string(),
+            if lang == "zh" {
+                "运行中".to_string()
+            } else {
+                "RUNNING".to_string()
+            },
+        );
+        assert!(items[2].0.contains("(V)"));
+
+        let mut cursor = UnicodeWidthStr::width(crate::ui::tr("plot_title", lang)) + 2;
+        cursor += UnicodeWidthStr::width(format!(" {}: {} ", items[0].0, items[0].1).as_str()) + 2;
+        cursor += UnicodeWidthStr::width(format!(" {}: {} ", items[1].0, items[1].1).as_str()) + 2;
+
+        let view_before = app.plotter_mode;
+        assert!(app.handle_mouse_click(cursor as u16 + 1, 5, tx));
+        assert_ne!(app.plotter_mode, view_before);
 
         let _ = std::fs::remove_file("test_project_config.json");
     }
