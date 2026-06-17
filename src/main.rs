@@ -264,6 +264,116 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         _ => {}
                                     }
+                                } else if app.show_manifest_edit_modal {
+                                    match key.code {
+                                        KeyCode::Enter => {
+                                            app.save_manifest_edit();
+                                        }
+                                        KeyCode::Esc => {
+                                            app.show_manifest_edit_modal = false;
+                                        }
+                                        KeyCode::Backspace => {
+                                            app.manifest_edit_input.pop();
+                                        }
+                                        KeyCode::Char(c) => {
+                                            app.manifest_edit_input.push(c);
+                                        }
+                                        _ => {}
+                                    }
+                                } else if app.show_file_picker {
+                                    match key.code {
+                                        KeyCode::Enter => {
+                                            app.select_file_picker_item();
+                                        }
+                                        KeyCode::Esc => {
+                                            app.show_file_picker = false;
+                                        }
+                                        KeyCode::Up => {
+                                            if !app.file_picker_items.is_empty() {
+                                                if app.file_picker_selected_idx > 0 {
+                                                    app.file_picker_selected_idx -= 1;
+                                                } else {
+                                                    app.file_picker_selected_idx = app.file_picker_items.len() - 1;
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Down => {
+                                            if !app.file_picker_items.is_empty() {
+                                                if app.file_picker_selected_idx < app.file_picker_items.len() - 1 {
+                                                    app.file_picker_selected_idx += 1;
+                                                } else {
+                                                    app.file_picker_selected_idx = 0;
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Backspace => {
+                                            if !app.file_picker_search_input.is_empty() {
+                                                app.file_picker_search_input.pop();
+                                                app.file_picker_selected_idx = 0;
+                                                app.refresh_file_picker_items();
+                                            } else {
+                                                if let Some(parent) = app.file_picker_current_dir.parent() {
+                                                    app.file_picker_current_dir = parent.to_path_buf();
+                                                    app.file_picker_selected_idx = 0;
+                                                    app.refresh_file_picker_items();
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Char(c) => {
+                                            app.file_picker_search_input.push(c);
+                                            app.file_picker_selected_idx = 0;
+                                            app.refresh_file_picker_items();
+                                        }
+                                        _ => {}
+                                    }
+                                } else if app.show_custom_baud_modal {
+                                    match key.code {
+                                        KeyCode::Enter => {
+                                            app.apply_custom_baud_rate();
+                                        }
+                                        KeyCode::Esc => {
+                                            app.show_custom_baud_modal = false;
+                                        }
+                                        KeyCode::Tab => {
+                                            app.start_auto_baud_detection();
+                                        }
+                                        KeyCode::Backspace => {
+                                            app.custom_baud_input.pop();
+                                        }
+                                        KeyCode::Char(c) => {
+                                            if c.is_ascii_digit() {
+                                                app.custom_baud_input.push(c);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                } else if app.show_auto_reply_modal {
+                                    match key.code {
+                                        KeyCode::Enter => {
+                                            app.save_auto_reply();
+                                        }
+                                        KeyCode::Esc => {
+                                            app.show_auto_reply_modal = false;
+                                        }
+                                        KeyCode::Tab => {
+                                            app.auto_reply_focused_field = (app.auto_reply_focused_field + 1) % 2;
+                                        }
+                                        KeyCode::Backspace => {
+                                            if app.auto_reply_focused_field == 0 {
+                                                app.auto_reply_pattern_input.pop();
+                                            } else {
+                                                app.auto_reply_response_input.pop();
+                                            }
+                                        }
+                                        KeyCode::Char(c) => {
+                                            if app.auto_reply_focused_field == 0 {
+                                                app.auto_reply_pattern_input.push(c);
+                                            } else {
+                                                app.auto_reply_response_input.push(c);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
                                 } else if app.active_tab == ActiveTab::Serial && app.serial_is_typing {
                                     // Serial send buffer typing input handling
                                     match key.code {
@@ -361,21 +471,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
 
-                                        KeyCode::Char('a') | KeyCode::Char('A') => {
-                                            if app.active_tab == ActiveTab::Widgets {
-                                                app.is_adding_widget = true;
-                                                app.widget_search_input.clear();
-                                                app.add_menu_selected = 0;
-                                            } else if app.active_tab == ActiveTab::Flasher {
-                                                app.auto_flash = !app.auto_flash;
-                                                app.log(format!("Auto-Flash mode: {}", if app.auto_flash { "ENABLED" } else { "DISABLED" }));
-                                            }
-                                        }
-                                        KeyCode::Char('d') | KeyCode::Char('D') => {
-                                            if app.active_tab == ActiveTab::Widgets {
-                                                app.delete_selected_widget();
-                                            }
-                                        }
+                                         KeyCode::Char('a') | KeyCode::Char('A') => {
+                                             if app.active_tab == ActiveTab::Widgets {
+                                                 app.is_adding_widget = true;
+                                                 app.widget_search_input.clear();
+                                                 app.add_menu_selected = 0;
+                                             } else if app.active_tab == ActiveTab::Flasher {
+                                                 app.auto_flash = !app.auto_flash;
+                                                 app.log(format!("Auto-Flash mode: {}", if app.auto_flash { "ENABLED" } else { "DISABLED" }));
+                                             } else if app.active_tab == ActiveTab::Serial {
+                                                 app.serial_auto_reply_enabled = !app.serial_auto_reply_enabled;
+                                                 if app.serial_auto_reply_enabled && app.serial_auto_reply_pattern.is_empty() {
+                                                     app.show_auto_reply_modal = true;
+                                                     app.auto_reply_pattern_input = app.serial_auto_reply_pattern.clone();
+                                                     app.auto_reply_response_input = app.serial_auto_reply_response.clone();
+                                                     app.auto_reply_focused_field = 0;
+                                                 }
+                                                 app.log(format!("Auto Reply: {}", if app.serial_auto_reply_enabled { "ENABLED" } else { "DISABLED" }));
+                                             }
+                                         }
+                                         KeyCode::Char('d') | KeyCode::Char('D') => {
+                                             if app.active_tab == ActiveTab::Widgets {
+                                                 app.delete_selected_widget();
+                                             } else if app.active_tab == ActiveTab::Serial {
+                                                 app.toggle_dtr();
+                                             }
+                                         }
+                                         KeyCode::Char('g') | KeyCode::Char('G') => {
+                                             if app.active_tab == ActiveTab::Serial {
+                                                 app.toggle_rts();
+                                             }
+                                         }
 
                                         // Focused-pane controls: Manual IMU override, rotation, and translation (UJIKOL) when viewing IMU Cube
                                         KeyCode::Char('t') | KeyCode::Char('T') => {
@@ -479,9 +605,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         KeyCode::Char('b') | KeyCode::Char('B') => {
                                             if app.active_tab == ActiveTab::Serial {
-                                                app.cycle_serial_baud_rate();
+                                                app.show_custom_baud_modal = true;
+                                                app.custom_baud_input = app.serial_baud_rate.to_string();
                                             } else if app.active_tab == ActiveTab::Flasher {
-                                                app.start_flashing(tx.clone());
+                                                app.flash_batch_mode = !app.flash_batch_mode;
+                                                app.log(format!("Flash Mode set to: {}", if app.flash_batch_mode { "BATCH" } else { "SINGLE" }));
                                             }
                                         }
                                         KeyCode::Char('f') | KeyCode::Char('F') => {
@@ -511,6 +639,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.toggle_serial_monitor();
                                             } else if app.active_tab == ActiveTab::Plotter {
                                                 app.cycle_vofa_mode();
+                                             } else if app.active_tab == ActiveTab::Flasher {
+                                                 app.toggle_merged_flash();
                                             }
                                         }
                                         KeyCode::Char('+') | KeyCode::Char('=') => {
@@ -638,7 +768,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.set_plotter_active(!app.plotter_active);
                                                 app.log(format!("Plotter active: {}", if app.plotter_active { "ON" } else { "OFF" }));
                                             } else if app.active_tab == ActiveTab::Flasher {
-                                                app.start_flashing_selected(tx.clone());
+                                                if app.flash_batch_mode {
+                                                    app.start_flashing(tx.clone());
+                                                } else {
+                                                    app.start_flashing_selected(tx.clone());
+                                                }
                                             } else if app.active_tab == ActiveTab::Configuration {
                                                 app.start_flashing(tx.clone());
                                             } else if app.active_tab == ActiveTab::Serial {

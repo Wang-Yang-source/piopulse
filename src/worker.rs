@@ -1,6 +1,7 @@
 use crate::config::ProjectConfig;
 use std::borrow::Cow;
 use std::fs::File;
+use serialport::SerialPort;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,6 +26,13 @@ pub trait FlasherBackend {
         config: &ProjectConfig,
         tx: &Sender<WorkerMessage>,
     ) -> Result<Option<String>, String>;
+}
+
+#[derive(Debug, Clone)]
+pub enum MonitorCommand {
+    WriteData(Vec<u8>),
+    SetDtr(bool),
+    SetRts(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -77,10 +85,14 @@ pub enum WorkerMessage {
         port: String,
         data: Vec<u8>,
     },
+    BaudDetected {
+        port: String,
+        baud_rate: u32,
+    },
     MonitorStarted {
         port: String,
         baud_rate: u32,
-        sender: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        sender: tokio::sync::mpsc::UnboundedSender<MonitorCommand>,
     },
     MonitorStopped {
         port: String,
@@ -144,7 +156,7 @@ pub fn spawn_serial_monitor(
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
         }
 
-        let (tx_cmd, mut rx_cmd) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (tx_cmd, mut rx_cmd) = tokio::sync::mpsc::unbounded_channel::<MonitorCommand>();
 
         let _ = tx
             .send(WorkerMessage::Log {
@@ -212,11 +224,27 @@ pub fn spawn_serial_monitor(
                 let mut disconnected = false;
                 loop {
                     match rx_cmd.try_recv() {
-                        Ok(cmd) => {
+                        Ok(MonitorCommand::WriteData(cmd)) => {
                             if let Err(e) = port.write_all(&cmd) {
                                 let _ = tx.blocking_send(WorkerMessage::Log {
                                     port: port_name.clone(),
                                     message: format!("Serial monitor write error: {}", e),
+                                });
+                            }
+                        }
+                        Ok(MonitorCommand::SetDtr(level)) => {
+                            if let Err(e) = port.write_data_terminal_ready(level) {
+                                let _ = tx.blocking_send(WorkerMessage::Log {
+                                    port: port_name.clone(),
+                                    message: format!("Failed to set DTR: {}", e),
+                                });
+                            }
+                        }
+                        Ok(MonitorCommand::SetRts(level)) => {
+                            if let Err(e) = port.write_request_to_send(level) {
+                                let _ = tx.blocking_send(WorkerMessage::Log {
+                                    port: port_name.clone(),
+                                    message: format!("Failed to set RTS: {}", e),
                                 });
                             }
                         }
@@ -362,7 +390,7 @@ fn load_and_pad_file(path: &str) -> Result<Vec<u8>, String> {
     Ok(data)
 }
 
-fn map_chip_type(chip_str: &str) -> Option<Chip> {
+pub fn map_chip_type(chip_str: &str) -> Option<Chip> {
     match chip_str.to_lowercase().replace("-", "").as_str() {
         "esp32" => Some(Chip::Esp32),
         "esp32s2" => Some(Chip::Esp32s2),
@@ -506,26 +534,80 @@ impl FlasherBackend for Esp32SerialBackend {
             message: format!("Erase mode: {}", config.erase_mode),
         });
 
+        // Log the generated esptool command
+        let esptool_cmd = generate_esptool_command(&port_name, config, config.use_merged_flash);
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!("Generated esptool command: {}", esptool_cmd),
+        });
+
         let mut segments = Vec::new();
 
-        if !config.bootloader_path.is_empty() {
-            let offset = parse_offset(&config.bootloader_offset)?;
-            let data = load_and_pad_file(&config.bootloader_path)?;
-            segments.push(Segment {
-                addr: offset,
-                data: Cow::Owned(data),
-            });
+        if !config.images.is_empty() {
+            // Filter images based on whether we are in merged or segmented mode
+            for img in &config.images {
+                let is_merged_img = img.label.contains("merged") || img.path.ends_with("factory_merged.bin") || img.path.ends_with("merged.bin");
+                
+                if config.use_merged_flash == is_merged_img {
+                    if !img.path.is_empty() {
+                        let offset = parse_offset(&img.offset)?;
+                        let mut data = load_and_pad_file(&img.path)?;
+                        
+                        // Mutate bootloader / merged header if do_not_chg_bin is false AND the offset is bootloader offset (usually 0x0 or 0x1000)
+                        if !config.do_not_chg_bin && (offset == 0 || offset == 0x1000) {
+                            modify_bin_header(&mut data, config);
+                        }
+                        
+                        segments.push(Segment {
+                            addr: offset,
+                            data: Cow::Owned(data),
+                        });
+                    }
+                }
+            }
+        } else {
+            // Legacy fallback
+            if !config.bootloader_path.is_empty() {
+                let offset = parse_offset(&config.bootloader_offset)?;
+                let mut data = load_and_pad_file(&config.bootloader_path)?;
+                if !config.do_not_chg_bin && (offset == 0 || offset == 0x1000) {
+                    modify_bin_header(&mut data, config);
+                }
+                segments.push(Segment {
+                    addr: offset,
+                    data: Cow::Owned(data),
+                });
+            }
+
+            if !config.partitions_path.is_empty() {
+                let offset = parse_offset(&config.partitions_offset)?;
+                let data = load_and_pad_file(&config.partitions_path)?;
+                segments.push(Segment {
+                    addr: offset,
+                    data: Cow::Owned(data),
+                });
+            }
+
+            if !config.otadata_path.is_empty() {
+                let offset = parse_offset(&config.otadata_offset)?;
+                let data = load_and_pad_file(&config.otadata_path)?;
+                segments.push(Segment {
+                    addr: offset,
+                    data: Cow::Owned(data),
+                });
+            }
+
+            if !config.app_path.is_empty() {
+                let offset = parse_offset(&config.app_offset)?;
+                let data = load_and_pad_file(&config.app_path)?;
+                segments.push(Segment {
+                    addr: offset,
+                    data: Cow::Owned(data),
+                });
+            }
         }
 
-        if !config.partitions_path.is_empty() {
-            let offset = parse_offset(&config.partitions_offset)?;
-            let data = load_and_pad_file(&config.partitions_path)?;
-            segments.push(Segment {
-                addr: offset,
-                data: Cow::Owned(data),
-            });
-        }
-
+        // Add dynamic NVS segment (always needed)
         // Dynamic NVS page provisioning
         let generated_sn = crate::nvs::generate_serial_number(&chip_name, &mac_str);
         let serial_number = if config.sn_prefix.trim().is_empty() {
@@ -550,26 +632,10 @@ impl FlasherBackend for Esp32SerialBackend {
             message: format!("Generated Device Name: {}", device_name),
         });
 
-        segments.push(Segment {
-            addr: parse_offset(&config.nvs_offset)?,
-            data: Cow::Owned(nvs_data),
-        });
-
-        if !config.otadata_path.is_empty() {
-            let offset = parse_offset(&config.otadata_offset)?;
-            let data = load_and_pad_file(&config.otadata_path)?;
+        if !config.nvs_offset.is_empty() {
             segments.push(Segment {
-                addr: offset,
-                data: Cow::Owned(data),
-            });
-        }
-
-        if !config.app_path.is_empty() {
-            let offset = parse_offset(&config.app_offset)?;
-            let data = load_and_pad_file(&config.app_path)?;
-            segments.push(Segment {
-                addr: offset,
-                data: Cow::Owned(data),
+                addr: parse_offset(&config.nvs_offset)?,
+                data: Cow::Owned(nvs_data),
             });
         }
 
@@ -837,6 +903,119 @@ impl FlasherBackend for PlatformIoUploadBackend {
             Err("PlatformIO upload command failed. Check logs for details.".to_string())
         }
     }
+}
+
+fn modify_bin_header(data: &mut [u8], config: &ProjectConfig) {
+    if data.len() < 4 || data[0] != 0xE9 {
+        return;
+    }
+    // Parse flash mode
+    let mode_byte = match config.flash_mode.to_lowercase().as_str() {
+        "qio" => 0,
+        "qout" => 1,
+        "dio" => 2,
+        "dout" => 3,
+        _ => return, // Keep unmodified if unrecognized
+    };
+    
+    // Parse flash size
+    let size_val = match config.flash_size.to_uppercase().as_str() {
+        "1MB" => 0,
+        "2MB" => 1,
+        "4MB" => 2,
+        "8MB" => 3,
+        "16MB" => 4,
+        "32MB" => 5,
+        "64MB" => 6,
+        "128MB" => 7,
+        _ => return,
+    };
+    
+    // Parse flash frequency
+    let chip_lower = config.chip_type.to_lowercase();
+    let freq_val = if chip_lower.contains("h2") {
+        match config.flash_freq.to_lowercase().as_str() {
+            "12m" | "12mhz" => 0x2,
+            "16m" | "16mhz" => 0x1,
+            "24m" | "24mhz" => 0x0,
+            "48m" | "48mhz" => 0xf,
+            _ => return,
+        }
+    } else if chip_lower.contains("c2") {
+        match config.flash_freq.to_lowercase().as_str() {
+            "15m" | "15mhz" => 0x2,
+            "20m" | "20mhz" => 0x1,
+            "30m" | "30mhz" => 0x0,
+            "60m" | "60mhz" => 0xf,
+            _ => return,
+        }
+    } else {
+        match config.flash_freq.to_lowercase().as_str() {
+            "20m" | "20mhz" => 0x2,
+            "26m" | "26mhz" => 0x1,
+            "40m" | "40mhz" => 0x0,
+            "80m" | "80mhz" => 0xf,
+            _ => return,
+        }
+    };
+    
+    data[2] = mode_byte;
+    data[3] = (size_val << 4) | freq_val;
+}
+
+pub fn generate_esptool_command(port: &str, config: &ProjectConfig, use_merged_flash: bool) -> String {
+    let chip = match config.chip_type.to_lowercase().as_str() {
+        "esp32-s3" => "esp32s3",
+        "esp32-c3" => "esp32c3",
+        "esp32-c6" => "esp32c6",
+        "esp32-s2" => "esp32s2",
+        "esp32-c2" => "esp32c2",
+        "esp32-h2" => "esp32h2",
+        "esp32" => "esp32",
+        _ => "auto",
+    };
+    
+    let mode = if config.do_not_chg_bin { "keep" } else { &config.flash_mode };
+    let freq = if config.do_not_chg_bin { "keep" } else { &config.flash_freq };
+    let size = if config.do_not_chg_bin { "keep" } else { &config.flash_size };
+    
+    let mut cmd = format!(
+        "esptool.py --chip {} --port {} --baud {} write_flash -z --flash_mode {} --flash_freq {} --flash_size {}",
+        chip, port, config.baud_rate, mode, freq, size
+    );
+    
+    // Add images
+    if !config.images.is_empty() {
+        for img in &config.images {
+            let is_merged_img = img.label.contains("merged") || img.path.ends_with("factory_merged.bin") || img.path.ends_with("merged.bin");
+            if use_merged_flash == is_merged_img {
+                if !img.path.is_empty() {
+                    cmd.push_str(&format!(" {} {}", img.offset, img.path));
+                }
+            }
+        }
+    } else {
+        // Legacy
+        if !config.bootloader_path.is_empty() {
+            cmd.push_str(&format!(" {} {}", config.bootloader_offset, config.bootloader_path));
+        }
+        if !config.partitions_path.is_empty() {
+            cmd.push_str(&format!(" {} {}", config.partitions_offset, config.partitions_path));
+        }
+        if !config.otadata_path.is_empty() {
+            cmd.push_str(&format!(" {} {}", config.otadata_offset, config.otadata_path));
+        }
+        if !config.app_path.is_empty() {
+            cmd.push_str(&format!(" {} {}", config.app_offset, config.app_path));
+        }
+    }
+    
+    // Add NVS if offset is present
+    if !config.nvs_offset.is_empty() {
+        cmd.push_str(&format!(" {} <dynamic_nvs.bin>", config.nvs_offset));
+    }
+    
+    cmd
 }
 
 fn do_native_flash(

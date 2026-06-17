@@ -2,12 +2,14 @@ use crate::config::{PROJECT_CONFIG_FIELD_COUNT, ProjectConfig, ToolConfig};
 use crate::worker::{self, WorkerMessage};
 use ratatui::layout::Rect;
 use std::sync::Arc;
+use std::io::Read;
 use std::time::{Duration, Instant};
 
 pub const SPLASH_TICKS: usize = 4;
 
 #[derive(Debug, Clone, Copy)]
 pub enum SoundEffect {
+    #[allow(dead_code)]
     Boot,
     Success,
     Failure,
@@ -35,6 +37,21 @@ pub struct LayoutZones {
     pub flash_summary: Rect,
     pub flash_device_table: Rect,
     pub flash_empty_state: Rect,
+    pub flash_mode_toggle: Rect,
+    pub custom_baud_modal: Rect,
+    pub auto_reply_modal: Rect,
+    pub flash_manifest_table: Rect,
+    pub manifest_edit_modal: Rect,
+    pub file_picker_modal: Rect,
+    pub file_picker_table: Rect,
+}
+
+#[derive(Clone, Debug)]
+pub struct FilePickerItem {
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub is_dir: bool,
+    pub size_str: String,
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +222,24 @@ pub struct App {
     pub show_port_menu: bool,
     pub port_menu_selected: usize,
     pub auto_flash: bool,
+    pub use_merged_flash: bool,
+    pub flash_batch_mode: bool,
+    pub show_custom_baud_modal: bool,
+    pub custom_baud_input: String,
+    pub show_auto_reply_modal: bool,
+    pub auto_reply_pattern_input: String,
+    pub auto_reply_response_input: String,
+    pub auto_reply_focused_field: usize,
+    pub show_manifest_edit_modal: bool,
+    pub manifest_edit_image_label: String,
+    pub manifest_edit_is_offset: bool,
+    pub manifest_edit_input: String,
+    pub show_file_picker: bool,
+    pub file_picker_current_dir: std::path::PathBuf,
+    pub file_picker_items: Vec<FilePickerItem>,
+    pub file_picker_selected_idx: usize,
+    pub file_picker_search_input: String,
+    pub file_picker_image_label: String,
 
     // UI state
     pub active_tab: ActiveTab,
@@ -294,7 +329,7 @@ pub struct App {
     pub latest_image_data: Vec<u8>,
     pub show_sidebar: bool,
     pub serial_tx_senders:
-        std::collections::HashMap<String, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+        std::collections::HashMap<String, tokio::sync::mpsc::UnboundedSender<crate::worker::MonitorCommand>>,
     pub serial_monitor_baud_rates: std::collections::HashMap<String, u32>,
     pub serial_pending_monitors:
         std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>,
@@ -304,14 +339,30 @@ pub struct App {
     pub splash_ticks_remaining: Option<usize>,
     pub flash_success_ticks_remaining: Option<usize>,
     pub serial_frame_format: String,
+    pub serial_auto_reply_enabled: bool,
+    pub serial_auto_reply_pattern: String,
+    pub serial_auto_reply_response: String,
+    pub serial_dtr_active: bool,
+    pub serial_rts_active: bool,
+    pub serial_auto_baud_scanning: bool,
+    #[allow(dead_code)]
+    pub serial_auto_baud_tick: u64,
 }
 
 impl App {
     pub fn new(config_path: String) -> Self {
         let mut pio_detected = false;
-        let config = if let Some(pio_cfg) = ProjectConfig::detect_platformio_config() {
+        let mut config = if let Some(pio_cfg) = ProjectConfig::detect_platformio_config() {
             pio_detected = true;
             pio_cfg
+        } else if std::path::Path::new("factory/project_config.json").exists() {
+            ProjectConfig::load_from_file("factory/project_config.json").unwrap_or_else(|_| {
+                ProjectConfig::load_from_file(&config_path).unwrap_or_else(|_| {
+                    let default_cfg = ProjectConfig::default();
+                    let _ = default_cfg.save_to_file(&config_path);
+                    default_cfg
+                })
+            })
         } else {
             ProjectConfig::load_from_file(&config_path).unwrap_or_else(|_| {
                 let default_cfg = ProjectConfig::default();
@@ -319,6 +370,13 @@ impl App {
                 default_cfg
             })
         };
+
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        config.populate_default_images_if_empty(&current_dir);
+
+        let has_segmented = config.images.iter().any(|img| img.label != "merged" && img.label != "factory_merged" && !img.path.ends_with("merged.bin"));
+        let has_merged = config.images.iter().any(|img| img.label == "merged" || img.label == "factory_merged" || img.path.ends_with("merged.bin"));
+        let use_merged_flash = has_merged && !has_segmented;
 
         let waveform_history = std::collections::HashMap::new();
 
@@ -340,6 +398,22 @@ impl App {
             tool_settings_selected,
             show_port_menu: false,
             port_menu_selected: 0,
+            show_custom_baud_modal: false,
+            custom_baud_input: String::new(),
+            show_auto_reply_modal: false,
+            auto_reply_pattern_input: String::new(),
+            auto_reply_response_input: String::new(),
+            auto_reply_focused_field: 0,
+            show_manifest_edit_modal: false,
+            manifest_edit_image_label: String::new(),
+            manifest_edit_is_offset: false,
+            manifest_edit_input: String::new(),
+            show_file_picker: false,
+            file_picker_current_dir: std::path::PathBuf::new(),
+            file_picker_items: Vec::new(),
+            file_picker_selected_idx: 0,
+            file_picker_search_input: String::new(),
+            file_picker_image_label: String::new(),
             active_tab: ActiveTab::Serial,
             selected_channel_idx: 0,
             selected_config_field: 0,
@@ -427,7 +501,16 @@ impl App {
             splash_ticks_remaining: Some(SPLASH_TICKS),
             flash_success_ticks_remaining: None,
             serial_frame_format: "8-N-1".to_string(),
+            serial_auto_reply_enabled: false,
+            serial_auto_reply_pattern: String::new(),
+            serial_auto_reply_response: String::new(),
+            serial_dtr_active: true,
+            serial_rts_active: true,
+            serial_auto_baud_scanning: false,
+            serial_auto_baud_tick: 0,
             auto_flash: false,
+            use_merged_flash,
+            flash_batch_mode: true,
         };
 
         crate::vofa::ACTIVE_VOFA_MODE
@@ -524,6 +607,24 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    pub fn toggle_merged_flash(&mut self) {
+        let has_segmented = self.config.images.iter().any(|img| img.label != "merged" && img.label != "factory_merged" && !img.path.ends_with("merged.bin"));
+        let has_merged = self.config.images.iter().any(|img| img.label == "merged" || img.label == "factory_merged" || img.path.ends_with("merged.bin"));
+        
+        if has_segmented && has_merged {
+            self.use_merged_flash = !self.use_merged_flash;
+            self.config.use_merged_flash = self.use_merged_flash;
+            self.log(format!(
+                "Flash mode toggled to: {}",
+                if self.use_merged_flash { "Merged Bin" } else { "Segmented" }
+            ));
+        } else if !has_merged {
+            self.log("Merged binary is not configured/available.");
+        } else {
+            self.log("Segmented files are not configured/available.");
         }
     }
 
@@ -670,7 +771,6 @@ impl App {
     pub fn finish_splash(&mut self) {
         if self.splash_ticks_remaining.is_some() {
             self.splash_ticks_remaining = None;
-            self.play_sound(SoundEffect::Boot);
         }
     }
 
@@ -1033,8 +1133,51 @@ impl App {
             }
             WorkerMessage::SerialData { port, data } => {
                 self.capture_serial_timeline_frame(SerialDirection::Rx, &port, &data);
+
+                // Auto-Reply logic
+                if self.serial_auto_reply_enabled && !self.serial_auto_reply_pattern.is_empty() {
+                    let rx_text = String::from_utf8_lossy(&data);
+                    let matched = if let Ok(re) = regex::Regex::new(&self.serial_auto_reply_pattern) {
+                        re.is_match(&rx_text)
+                    } else {
+                        rx_text.contains(&self.serial_auto_reply_pattern)
+                    };
+                    if matched {
+                        let unescaped_resp = unescape_string(&self.serial_auto_reply_response);
+                        let bytes = unescaped_resp.as_bytes().to_vec();
+
+                        if let Some(sender) = self.serial_tx_senders.get(&port).cloned() {
+                            let tx_log = format!("[Auto-Reply] {}", self.serial_auto_reply_response);
+                            self.log(format!("[{}] [TX] {}", port, tx_log));
+                            self.capture_serial_timeline_frame(SerialDirection::Tx, &port, &bytes);
+                            let _ = sender.send(crate::worker::MonitorCommand::WriteData(bytes));
+                        }
+                    }
+                }
+
                 for line in format_serial_rx_messages(&data, self.serial_hex_mode_rx) {
                     self.channel_log(&port, line);
+                }
+            }
+            WorkerMessage::BaudDetected { port, baud_rate } => {
+                self.serial_auto_baud_scanning = false;
+                self.serial_baud_rate = baud_rate;
+                self.show_serial_notice(
+                    format!("Baud: {} bps", baud_rate),
+                    SerialNoticeKind::Success,
+                );
+                self.log(format!("[{}] Auto-detected baud rate: {} bps.", port, baud_rate));
+
+                // If it was monitoring, restart monitoring at the new baud rate
+                if let Some(active_port) = self.get_selected_port() {
+                    if active_port == port {
+                        let had_monitor = self.serial_tx_senders.remove(&port).is_some()
+                            || self.serial_monitor_baud_rates.remove(&port).is_some()
+                            || self.serial_pending_monitors.remove(&port).is_some();
+                        if had_monitor {
+                            self.toggle_serial_monitor(); // Re-open at new baud
+                        }
+                    }
                 }
             }
             WorkerMessage::WaveformData { port, values } => {
@@ -1068,7 +1211,12 @@ impl App {
                 self.serial_pending_monitors.remove(&port);
                 self.serial_monitor_baud_rates
                     .insert(port.clone(), baud_rate);
-                self.serial_tx_senders.insert(port.clone(), sender);
+                self.serial_tx_senders.insert(port.clone(), sender.clone());
+
+                // Set initial DTR and RTS pin states
+                let _ = sender.send(crate::worker::MonitorCommand::SetDtr(self.serial_dtr_active));
+                let _ = sender.send(crate::worker::MonitorCommand::SetRts(self.serial_rts_active));
+
                 self.show_serial_notice(
                     format!("Monitoring {} at {} bps", port, baud_rate),
                     SerialNoticeKind::Info,
@@ -1315,6 +1463,7 @@ impl App {
         self.log("Plotter view reset to auto-follow latest.");
     }
 
+    #[allow(dead_code)]
     pub fn cycle_serial_baud_rate(&mut self) {
         self.serial_baud_rate = next_serial_baud_rate(self.serial_baud_rate);
         if let Some(port) = self.get_selected_port() {
@@ -1380,7 +1529,7 @@ impl App {
                 self.capture_serial_timeline_frame(SerialDirection::Tx, &port, &bytes);
 
                 if let Some(sender) = self.serial_tx_senders.get(&port).cloned() {
-                    if let Err(e) = sender.send(bytes) {
+                    if let Err(e) = sender.send(crate::worker::MonitorCommand::WriteData(bytes)) {
                         self.log(format!("Failed to send to serial port: {}", e));
                     }
                 }
@@ -1480,7 +1629,7 @@ impl App {
         }
 
         use unicode_width::UnicodeWidthStr;
-        let title = format!(" PIOPULSE v{} ", env!("CARGO_PKG_VERSION"));
+        let title = format!(" ☕ PIOPULSE v{} ", env!("CARGO_PKG_VERSION"));
         let mode = if self.admin_mode {
             crate::ui::tr("admin_mode_header", &self.tool_config.language)
         } else {
@@ -1493,23 +1642,82 @@ impl App {
         (mode_start..mode_end).contains(&relative_col)
     }
 
+    pub fn get_flash_summary_button_rects(&self) -> Vec<Rect> {
+        let area = self.layout_zones.flash_summary;
+        if area.width < 4 || area.height < 8 {
+            return vec![Rect::default(); 4];
+        }
+
+        let stats_block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded);
+        let inner_area = stats_block.inner(area);
+
+        let vertical_chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Length(4), // Stats text + separator line
+                ratatui::layout::Constraint::Length(2), // Buttons rows
+            ])
+            .split(inner_area);
+
+        let button_rows = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Length(1),
+            ])
+            .split(vertical_chunks[1]);
+
+        let lang = &self.tool_config.language;
+        let available_w = inner_area.width as usize;
+        let btn_w = if lang == "zh" {
+            14.min((available_w.saturating_sub(4)) / 2)
+        } else {
+            16.min((available_w.saturating_sub(4)) / 2)
+        };
+
+        let row1_cols = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints([
+                ratatui::layout::Constraint::Min(0),
+                ratatui::layout::Constraint::Length(btn_w as u16),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(btn_w as u16),
+                ratatui::layout::Constraint::Min(0),
+            ])
+            .split(button_rows[0]);
+
+        let row2_cols = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints([
+                ratatui::layout::Constraint::Min(0),
+                ratatui::layout::Constraint::Length(btn_w as u16),
+                ratatui::layout::Constraint::Length(2),
+                ratatui::layout::Constraint::Length(btn_w as u16),
+                ratatui::layout::Constraint::Min(0),
+            ])
+            .split(button_rows[1]);
+
+        vec![
+            row1_cols[1],
+            row1_cols[3],
+            row2_cols[1],
+            row2_cols[3],
+        ]
+    }
+
     pub fn flash_summary_action_at(&self, col: u16, row: u16) -> Option<usize> {
         let area = self.layout_zones.flash_summary;
-        if !self.is_inside_rect(col, row, area) || row != area.y + 2 {
+        if !self.is_inside_rect(col, row, area) {
             return None;
         }
 
-        use unicode_width::UnicodeWidthStr;
-        let lang = &self.tool_config.language;
-        let relative_col = col.saturating_sub(area.x + 1) as usize;
-        let mut cursor = 2;
-        for idx in 0..4 {
-            let label = crate::ui::channels::flash_action_label(idx, lang);
-            let width = UnicodeWidthStr::width(label) + 2;
-            if (cursor..cursor + width).contains(&relative_col) {
+        let rects = self.get_flash_summary_button_rects();
+        for (idx, rect) in rects.iter().enumerate() {
+            if col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height {
                 return Some(idx);
             }
-            cursor += width + 2;
         }
         None
     }
@@ -1668,6 +1876,32 @@ impl App {
             return true; // Consume click
         }
 
+        // Manifest Edit Modal Check
+        if self.show_manifest_edit_modal {
+            if !self.is_inside_rect(col, row, self.layout_zones.manifest_edit_modal) {
+                self.show_manifest_edit_modal = false;
+            }
+            return true;
+        }
+
+        // File Picker Modal Check
+        if self.show_file_picker {
+            if !self.is_inside_rect(col, row, self.layout_zones.file_picker_modal) {
+                self.show_file_picker = false;
+            } else if self.is_inside_rect(col, row, self.layout_zones.file_picker_table) {
+                let rect = self.layout_zones.file_picker_table;
+                let relative_row = row.saturating_sub(rect.y + 1) as usize;
+                if relative_row < self.file_picker_items.len() {
+                    if self.file_picker_selected_idx == relative_row {
+                        self.select_file_picker_item();
+                    } else {
+                        self.file_picker_selected_idx = relative_row;
+                    }
+                }
+            }
+            return true;
+        }
+
         // 2. Config Editing Check
         let clicked_config_table = self.active_tab == ActiveTab::Configuration
             && self.is_inside_rect(col, row, self.layout_zones.config_table);
@@ -1711,6 +1945,11 @@ impl App {
         }
 
         if self.active_tab == ActiveTab::Flasher {
+            if self.is_inside_rect(col, row, self.layout_zones.flash_mode_toggle) {
+                self.toggle_merged_flash();
+                return true;
+            }
+
             if self.channels.is_empty() {
                 if self.is_inside_rect(col, row, self.layout_zones.flash_empty_state) {
                     self.scan_ports(Some(tx.clone()));
@@ -1722,18 +1961,30 @@ impl App {
             if self.is_inside_rect(col, row, self.layout_zones.flash_summary) {
                 if let Some(action) = self.flash_summary_action_at(col, row) {
                     match action {
-                        0 => self.start_flashing_selected(tx.clone()),
-                        1 => self.start_flashing(tx.clone()),
-                        2 => {
-                            if self.is_flashing {
-                                self.log("Cannot rescan while flashing is active.");
+                        0 => {
+                            if self.flash_batch_mode {
+                                self.start_flashing(tx.clone());
                             } else {
-                                self.scan_ports(Some(tx.clone()));
-                                self.log("Manual port scan requested from flasher dashboard.");
+                                self.start_flashing_selected(tx.clone());
                             }
                         }
+                        1 => {
+                            self.flash_batch_mode = !self.flash_batch_mode;
+                            self.log(format!("Flash Mode set to: {}", if self.flash_batch_mode { "BATCH" } else { "SINGLE" }));
+                        }
+                        2 => {
+                            self.auto_flash = !self.auto_flash;
+                            self.log(format!("Auto-Flash mode: {}.", if self.auto_flash { "ENABLED" } else { "DISABLED" }));
+                        }
                         3 => {
-                            self.active_tab = ActiveTab::Configuration;
+                            if self.is_flashing {
+                                self.log("Cannot clear statistics while flashing is active.");
+                            } else {
+                                self.stats.total_passed = 0;
+                                self.stats.total_failed = 0;
+                                self.stats.total_attempted = 0;
+                                self.log("Production counters cleared.");
+                            }
                         }
                         _ => {}
                     }
@@ -1749,6 +2000,44 @@ impl App {
                     }
                 }
                 return true;
+            }
+
+            if self.is_inside_rect(col, row, self.layout_zones.flash_manifest_table) {
+                let rect = self.layout_zones.flash_manifest_table;
+                let relative_row = row.saturating_sub(rect.y + 1) as usize;
+
+                let (image_results, _) = self.config.validate_manifest();
+                let filtered_results: Vec<&crate::config::ImageValidationResult> = image_results.iter().filter(|res| {
+                    let is_merged = res.label.contains("merged") || res.path.ends_with("factory_merged.bin") || res.path.ends_with("merged.bin");
+                    self.use_merged_flash == is_merged
+                }).collect();
+
+                if relative_row < filtered_results.len() {
+                    let res = filtered_results[relative_row];
+                    let relative_col = col.saturating_sub(rect.x);
+
+                    if relative_col < 11 {
+                        self.show_manifest_edit_modal = true;
+                        self.manifest_edit_image_label = res.label.clone();
+                        self.manifest_edit_is_offset = true;
+                        self.manifest_edit_input = res.offset.clone();
+                        return true;
+                    } else if relative_col >= 11 && rect.width.saturating_sub(relative_col) >= 32 {
+                        self.show_file_picker = true;
+                        self.file_picker_image_label = res.label.clone();
+                        self.file_picker_search_input.clear();
+
+                        let path = std::path::Path::new(&res.path);
+                        if path.is_absolute() {
+                            self.file_picker_current_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                        } else {
+                            self.file_picker_current_dir = std::env::current_dir().unwrap_or_default();
+                        }
+                        self.file_picker_selected_idx = 0;
+                        self.refresh_file_picker_items();
+                        return true;
+                    }
+                }
             }
         }
 
@@ -1802,11 +2091,15 @@ impl App {
         // 3. Serial Settings & Toggles Check
         if self.active_tab == ActiveTab::Serial {
             if self.is_inside_rect(col, row, self.layout_zones.serial_port_info) {
-                let idx = row.saturating_sub(self.layout_zones.serial_port_info.y + 1) as usize;
-                if idx == 1 {
-                    self.cycle_serial_baud_rate();
-                    return true;
+                let click_row = row.saturating_sub(self.layout_zones.serial_port_info.y + 1);
+                if click_row == 0 {
+                    self.show_port_menu = true;
+                    self.port_menu_selected = self.selected_channel_idx;
+                } else if click_row == 1 {
+                    self.show_custom_baud_modal = true;
+                    self.custom_baud_input = self.serial_baud_rate.to_string();
                 }
+                return true;
             }
 
             if self.is_inside_rect(col, row, self.layout_zones.serial_options) {
@@ -1859,28 +2152,31 @@ impl App {
                                 }
                             ));
                         }
-                        5 => self.toggle_serial_recording(),
-                        6 => {
+                        5 => {
+                            self.serial_auto_reply_enabled = !self.serial_auto_reply_enabled;
+                            if self.serial_auto_reply_enabled && self.serial_auto_reply_pattern.is_empty() {
+                                self.show_auto_reply_modal = true;
+                                self.auto_reply_pattern_input = self.serial_auto_reply_pattern.clone();
+                                self.auto_reply_response_input = self.serial_auto_reply_response.clone();
+                                self.auto_reply_focused_field = 0;
+                            }
+                            self.log(format!(
+                                "Auto Reply: {}",
+                                if self.serial_auto_reply_enabled { "ENABLED" } else { "DISABLED" }
+                            ));
+                        }
+                        6 => self.toggle_serial_recording(),
+                        7 => {
                             if self.serial_playback_active {
                                 self.stop_serial_timeline_playback();
                             } else {
                                 self.start_serial_timeline_playback();
                             }
                         }
-                        7 => self.cycle_serial_baud_rate(),
+                        8 => self.toggle_dtr(),
+                        9 => self.toggle_rts(),
                         _ => {}
                     }
-                }
-                return true;
-            }
-
-            if self.is_inside_rect(col, row, self.layout_zones.serial_port_info) {
-                let click_row = row.saturating_sub(self.layout_zones.serial_port_info.y + 1);
-                if click_row == 0 {
-                    self.show_port_menu = true;
-                    self.port_menu_selected = self.selected_channel_idx;
-                } else if click_row == 1 {
-                    self.cycle_serial_baud_rate();
                 }
                 return true;
             }
@@ -2273,12 +2569,306 @@ impl App {
         }
     }
 
+    pub fn toggle_dtr(&mut self) {
+        self.serial_dtr_active = !self.serial_dtr_active;
+        self.log(format!("DTR Pin set to {}", if self.serial_dtr_active { "HIGH" } else { "LOW" }));
+        let port = self.get_selected_port().unwrap_or_else(|| "NONE".to_string());
+        if let Some(sender) = self.serial_tx_senders.get(&port).cloned() {
+            let _ = sender.send(crate::worker::MonitorCommand::SetDtr(self.serial_dtr_active));
+        }
+    }
+
+    pub fn toggle_rts(&mut self) {
+        self.serial_rts_active = !self.serial_rts_active;
+        self.log(format!("RTS Pin set to {}", if self.serial_rts_active { "HIGH" } else { "LOW" }));
+        let port = self.get_selected_port().unwrap_or_else(|| "NONE".to_string());
+        if let Some(sender) = self.serial_tx_senders.get(&port).cloned() {
+            let _ = sender.send(crate::worker::MonitorCommand::SetRts(self.serial_rts_active));
+        }
+    }
+
+    pub fn apply_custom_baud_rate(&mut self) {
+        if let Ok(parsed_baud) = self.custom_baud_input.trim().parse::<u32>() {
+            self.serial_baud_rate = parsed_baud;
+            if let Some(port) = self.get_selected_port() {
+                let had_monitor = self.serial_tx_senders.remove(&port).is_some()
+                    || self.serial_monitor_baud_rates.remove(&port).is_some()
+                    || self.serial_pending_monitors.remove(&port).is_some();
+                if had_monitor {
+                    self.show_serial_notice(
+                        format!("Restarting {} at {} bps", port, self.serial_baud_rate),
+                        SerialNoticeKind::Info,
+                    );
+                }
+            }
+            self.log(format!("Baud rate set to {} bps.", self.serial_baud_rate));
+            self.show_custom_baud_modal = false;
+        } else {
+            self.log("Invalid custom baud rate entered.");
+        }
+    }
+
+    pub fn save_manifest_edit(&mut self) {
+        let label = self.manifest_edit_image_label.clone();
+        let value = self.manifest_edit_input.trim().to_string();
+        let is_offset = self.manifest_edit_is_offset;
+
+        if let Some(img) = self.config.images.iter_mut().find(|i| i.label == label) {
+            if is_offset {
+                img.offset = value.clone();
+                self.log(format!("Updated manifest offset for '{}' to {}", label, value));
+            } else {
+                img.path = value.clone();
+                self.log(format!("Updated manifest path for '{}' to {}", label, value));
+            }
+        }
+
+        self.config.sync_images_to_flat_fields();
+        let _ = self.config.save_to_file(&self.config_path);
+        self.show_manifest_edit_modal = false;
+    }
+
+    pub fn refresh_file_picker_items(&mut self) {
+        let mut items = Vec::new();
+
+        // 1. Add ".." (Parent directory) if parent exists
+        if let Some(parent) = self.file_picker_current_dir.parent() {
+            items.push(FilePickerItem {
+                name: "..".to_string(),
+                path: parent.to_path_buf(),
+                is_dir: true,
+                size_str: "<DIR>".to_string(),
+            });
+        }
+
+        // 2. Read directory contents
+        if let Ok(entries) = std::fs::read_dir(&self.file_picker_current_dir) {
+            let mut dirs = Vec::new();
+            let mut files = Vec::new();
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                if name.starts_with('.') {
+                    // Skip hidden files/directories
+                    continue;
+                }
+
+                // Filter by search input if not empty
+                if !self.file_picker_search_input.is_empty() {
+                    let search_lower = self.file_picker_search_input.to_lowercase();
+                    if !name.to_lowercase().contains(&search_lower) {
+                        continue;
+                    }
+                }
+
+                let is_dir = path.is_dir();
+                let size_str = if is_dir {
+                    "<DIR>".to_string()
+                } else if let Ok(meta) = entry.metadata() {
+                    let sz = meta.len() as usize;
+                    if sz >= 1024 * 1024 {
+                        format!("{:.1}MB", sz as f64 / 1024.0 / 1024.0)
+                    } else if sz >= 1024 {
+                        format!("{:.1}KB", sz as f64 / 1024.0)
+                    } else if sz == 0 {
+                        "-".to_string()
+                    } else {
+                        format!("{}B", sz)
+                    }
+                } else {
+                    "-".to_string()
+                };
+
+                let item = FilePickerItem { name, path, is_dir, size_str };
+                if is_dir {
+                    dirs.push(item);
+                } else {
+                    files.push(item);
+                }
+            }
+
+            // Sort directories and files alphabetically
+            dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+            items.extend(dirs);
+            items.extend(files);
+        }
+
+        self.file_picker_items = items;
+        self.file_picker_selected_idx = self.file_picker_selected_idx.min(self.file_picker_items.len().saturating_sub(1));
+    }
+
+    pub fn select_file_picker_item(&mut self) {
+        if self.file_picker_selected_idx >= self.file_picker_items.len() {
+            return;
+        }
+        let item = self.file_picker_items[self.file_picker_selected_idx].clone();
+        if item.is_dir {
+            // Open directory
+            self.file_picker_current_dir = item.path;
+            self.file_picker_search_input.clear();
+            self.file_picker_selected_idx = 0;
+            self.refresh_file_picker_items();
+        } else {
+            // Select file and close
+            let label = self.file_picker_image_label.clone();
+            let value = item.path.to_string_lossy().to_string();
+
+            if let Some(img) = self.config.images.iter_mut().find(|i| i.label == label) {
+                img.path = value.clone();
+                self.log(format!("Updated manifest path for '{}' to {}", label, value));
+            }
+
+            self.config.sync_images_to_flat_fields();
+            let _ = self.config.save_to_file(&self.config_path);
+            self.show_file_picker = false;
+        }
+    }
+
+    pub fn save_auto_reply(&mut self) {
+        self.serial_auto_reply_pattern = self.auto_reply_pattern_input.clone();
+        self.serial_auto_reply_response = self.auto_reply_response_input.clone();
+        self.serial_auto_reply_enabled = true;
+        self.show_auto_reply_modal = false;
+        self.log(format!(
+            "Auto-Reply configured: Pattern='{}', Response='{}'",
+            self.serial_auto_reply_pattern, self.serial_auto_reply_response
+        ));
+    }
+
+    pub fn start_auto_baud_detection(&mut self) {
+        let port = if let Some(p) = self.get_selected_port() {
+            p
+        } else {
+            self.log("No serial port selected for auto-baud detection.");
+            return;
+        };
+
+        if self.serial_auto_baud_scanning {
+            self.log("Auto-baud scan is already running.");
+            return;
+        }
+
+        self.serial_auto_baud_scanning = true;
+        self.show_serial_notice(
+            "Detecting Baud...".to_string(),
+            SerialNoticeKind::Info,
+        );
+        self.log(format!("[{}] Starting auto-baud rate scanning...", port));
+
+        let app_tx = self.worker_tx.clone();
+        let frame_format = self.serial_frame_format.clone();
+        let port_clone = port.clone();
+
+        tokio::spawn(async move {
+            let rates = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
+            let mut best_baud = 115200;
+            let mut best_score = 0.0;
+
+            for &baud in &rates {
+                if let Some(ref tx) = app_tx {
+                    let _ = tx.send(WorkerMessage::Log {
+                        port: port_clone.clone(),
+                        message: format!("Scanning at {} bps...", baud),
+                    }).await;
+                }
+
+                let mut port_builder = serialport::new(&port_clone, baud).timeout(Duration::from_millis(150));
+                if let Some(db_char) = frame_format.chars().next() {
+                    match db_char {
+                        '5' => port_builder = port_builder.data_bits(serialport::DataBits::Five),
+                        '6' => port_builder = port_builder.data_bits(serialport::DataBits::Six),
+                        '7' => port_builder = port_builder.data_bits(serialport::DataBits::Seven),
+                        _ => port_builder = port_builder.data_bits(serialport::DataBits::Eight),
+                    }
+                }
+                if let Some(par_char) = frame_format.chars().nth(2) {
+                    match par_char {
+                        'E' | 'e' => port_builder = port_builder.parity(serialport::Parity::Even),
+                        'O' | 'o' => port_builder = port_builder.parity(serialport::Parity::Odd),
+                        _ => port_builder = port_builder.parity(serialport::Parity::None),
+                    }
+                }
+                if let Some(sb_char) = frame_format.chars().nth(4) {
+                    match sb_char {
+                        '2' => port_builder = port_builder.stop_bits(serialport::StopBits::Two),
+                        _ => port_builder = port_builder.stop_bits(serialport::StopBits::One),
+                    }
+                }
+
+                if let Ok(mut sport) = port_builder.open_native() {
+                    let mut read_buf = [0u8; 128];
+                    let start = std::time::Instant::now();
+                    let mut bytes_read = 0;
+
+                    while start.elapsed() < Duration::from_millis(150) {
+                        if let Ok(n) = sport.read(&mut read_buf) {
+                            if n > 0 {
+                                bytes_read = n;
+                                break;
+                            }
+                        }
+                    }
+
+                    if bytes_read > 0 {
+                        let score = score_printable_ratio(&read_buf[..bytes_read]);
+                        if score > best_score {
+                            best_score = score;
+                            best_baud = baud;
+                        }
+                        if score > 0.92 {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if let Some(ref tx) = app_tx {
+                let _ = tx.send(WorkerMessage::BaudDetected {
+                    port: port_clone.clone(),
+                    baud_rate: best_baud,
+                }).await;
+            }
+        });
+    }
+
     fn is_inside_rect(&self, col: u16, row: u16, rect: Rect) -> bool {
         col >= rect.x
             && col < (rect.x + rect.width)
             && row >= rect.y
             && row < (rect.y + rect.height)
     }
+}
+
+fn score_printable_ratio(data: &[u8]) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    let mut printable = 0;
+    let mut nulls = 0;
+    let mut control = 0;
+    for &b in data {
+        if b == 0 {
+            nulls += 1;
+        } else if b == 0x0A || b == 0x0D || b == 0x09 {
+            control += 1;
+        } else if b >= 0x20 && b <= 0x7E {
+            printable += 1;
+        }
+    }
+    let score = (printable as f64 * 0.6 + control as f64 * 0.3) - (nulls as f64 * 0.2);
+    score.max(0.0)
+}
+
+fn unescape_string(s: &str) -> String {
+    s.replace("\\n", "\n")
+        .replace("\\r", "\r")
+        .replace("\\t", "\t")
 }
 
 fn make_trace_id(port: &str, attempt: u32) -> String {
@@ -2289,6 +2879,7 @@ fn make_trace_id(port: &str, attempt: u32) -> String {
     format!("TRACE-{}-{:06}", sanitized_port, attempt)
 }
 
+#[allow(dead_code)]
 pub fn next_serial_baud_rate(current: u32) -> u32 {
     match current {
         9600 => 115200,
@@ -2616,6 +3207,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_sidebar_rendering() {
+        let mut app = App::new("test_project_config.json".to_string());
+        app.layout_zones.flash_summary = ratatui::layout::Rect::new(0, 0, 40, 8);
+        
+        let rects = app.get_flash_summary_button_rects();
+        assert_eq!(rects.len(), 4);
+        assert_eq!(rects[0].width, 16);
+        assert_eq!(rects[0].height, 1);
+        assert_eq!(rects[2].width, 16);
+        assert_eq!(rects[2].height, 1);
+        
+        let _ = std::fs::remove_file("test_project_config.json");
+    }
+
+    #[test]
     fn test_port_menu_toggle_and_select() {
         // Use a temporary path or mock path
         let mut app = App::new("test_project_config.json".to_string());
@@ -2759,7 +3365,8 @@ mod tests {
 
         assert_eq!(crate::ui::serial::serial_option_at(area, 30, 6), None);
         assert_eq!(crate::ui::serial::serial_option_at(area, 31, 5), None);
-        assert_eq!(crate::ui::serial::serial_option_at(area, 31, 10), None);
+        assert_eq!(crate::ui::serial::serial_option_at(area, 31, 10), Some(8));
+        assert_eq!(crate::ui::serial::serial_option_at(area, 31, 11), None);
     }
 
     #[test]
@@ -2854,6 +3461,61 @@ mod tests {
     }
 
     #[test]
+    fn test_flasher_manifest_table_click_and_edit() {
+        let mut app = App::new("test_project_config.json".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        app.active_tab = ActiveTab::Flasher;
+
+        // Initialize images in app.config
+        app.config.images = vec![
+            crate::config::FirmwareImage {
+                label: "bootloader".to_string(),
+                path: "test_boot.bin".to_string(),
+                offset: "0x1000".to_string(),
+                required: true,
+                sha256: None,
+            }
+        ];
+
+        // Click coordinates inside layout zone
+        app.layout_zones.flash_manifest_table = ratatui::layout::Rect::new(50, 5, 50, 10);
+
+
+        // Click Offset column
+        assert!(app.handle_mouse_click(52, 6, tx.clone()));
+        assert!(app.show_manifest_edit_modal);
+        assert_eq!(app.manifest_edit_image_label, "bootloader");
+        assert!(app.manifest_edit_is_offset);
+        assert_eq!(app.manifest_edit_input, "0x1000");
+
+        // Close modal
+        app.show_manifest_edit_modal = false;
+
+        // Click File Name column (offset ~ 50 + 15 = 65)
+        assert!(app.handle_mouse_click(65, 6, tx));
+        assert!(app.show_file_picker);
+        assert_eq!(app.file_picker_image_label, "bootloader");
+
+        // Mock selection in picker
+        app.file_picker_items = vec![
+            crate::app::FilePickerItem {
+                name: "new_boot.bin".to_string(),
+                path: std::path::PathBuf::from("new_boot.bin"),
+                is_dir: false,
+                size_str: "10KB".to_string(),
+            }
+        ];
+        app.file_picker_selected_idx = 0;
+        app.select_file_picker_item();
+
+        assert!(!app.show_file_picker);
+        assert_eq!(app.config.images[0].path, "new_boot.bin");
+        assert_eq!(app.config.bootloader_path, "new_boot.bin"); // flat field synchronized!
+
+        let _ = std::fs::remove_file("test_project_config.json");
+    }
+
+    #[test]
     fn test_flasher_keyboard_selection_tracks_scroll() {
         let mut app = App::new("test_project_config.json".to_string());
         app.active_tab = ActiveTab::Flasher;
@@ -2890,21 +3552,22 @@ mod tests {
         let mut app = App::new("test_project_config.json".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Flasher;
-        app.layout_zones.flash_summary = ratatui::layout::Rect::new(0, 0, 80, 4);
+        app.layout_zones.flash_summary = ratatui::layout::Rect::new(0, 0, 40, 10);
 
-        use unicode_width::UnicodeWidthStr;
-        let lang = &app.tool_config.language;
-        let mut cursor = 3;
-        for idx in 0..4 {
-            assert_eq!(app.flash_summary_action_at(cursor as u16, 2), Some(idx));
-            cursor +=
-                UnicodeWidthStr::width(crate::ui::channels::flash_action_label(idx, lang)) + 4;
-        }
+        // Test hover / action detection
+        // Row 5 Col 10 -> Action 0 (Start Flash)
+        assert_eq!(app.flash_summary_action_at(10, 5), Some(0));
+        // Row 5 Col 30 -> Action 1 (Toggle Mode)
+        assert_eq!(app.flash_summary_action_at(30, 5), Some(1));
+        // Row 6 Col 10 -> Action 2 (Auto Flash Toggle)
+        assert_eq!(app.flash_summary_action_at(10, 6), Some(2));
+        // Row 6 Col 30 -> Action 3 (Clear Stats)
+        assert_eq!(app.flash_summary_action_at(30, 6), Some(3));
 
-        let config_x =
-            cursor - UnicodeWidthStr::width(crate::ui::channels::flash_action_label(3, lang)) - 4;
-        assert!(app.handle_mouse_click(config_x as u16, 2, tx));
-        assert_eq!(app.active_tab, ActiveTab::Configuration);
+        // Click on Clear Stats
+        assert!(app.handle_mouse_click(30, 6, tx));
+        // Since we clicked Action 3, and app.is_flashing is false, stats should be cleared
+        assert_eq!(app.stats.total_attempted, 0);
 
         let _ = std::fs::remove_file("test_project_config.json");
     }
@@ -3126,10 +3789,10 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.layout_zones.header = ratatui::layout::Rect::new(0, 0, 80, 2);
 
-        let mode_x =
-            UnicodeWidthStr::width(format!(" PIOPULSE v{} ", env!("CARGO_PKG_VERSION")).as_str())
-                + UnicodeWidthStr::width(" | ")
-                + 1;
+        let mode_x = UnicodeWidthStr::width(
+            format!(" ☕ PIOPULSE v{} ", env!("CARGO_PKG_VERSION")).as_str(),
+        ) + UnicodeWidthStr::width(" | ")
+            + 1;
         assert!(app.handle_mouse_click(mode_x as u16, 0, tx));
         assert!(app.is_entering_password);
 

@@ -70,21 +70,46 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.layout_zones.port_menu_modal = area;
         modal::draw_port_menu(f, app, area);
     }
+
+    if app.show_custom_baud_modal {
+        let area = center_rect(42, 11, f.size());
+        app.layout_zones.custom_baud_modal = area;
+        modal::draw_custom_baud(f, app, area);
+    }
+
+    if app.show_auto_reply_modal {
+        let area = center_rect(52, 12, f.size());
+        app.layout_zones.auto_reply_modal = area;
+        modal::draw_auto_reply(f, app, area);
+    }
+
+    if app.show_manifest_edit_modal {
+        let area = center_rect(52, 9, f.size());
+        app.layout_zones.manifest_edit_modal = area;
+        modal::draw_manifest_edit(f, app, area);
+    }
+
+    if app.show_file_picker {
+        let area = center_rect(70, 18, f.size());
+        app.layout_zones.file_picker_modal = area;
+        modal::draw_file_picker(f, app, area);
+    }
 }
 
 fn draw_main_area(f: &mut Frame, app: &mut App, area: Rect) {
-    let can_show_sidebar = area.width >= 110 && area.height >= 22;
+    let can_show_sidebar = area.width >= 120 && area.height >= 22;
     if app.active_tab == ActiveTab::Flasher && app.show_sidebar && can_show_sidebar {
-        // Horizontal split: Left Workspace (70%), Right Panel (30%)
+        // Horizontal split: Left Workspace (flexible), Right Panel (fixed 56 cols for guided manifest)
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+            .constraints([Constraint::Min(80), Constraint::Length(56)])
             .split(area);
 
         draw_workspace(f, app, chunks[0]);
         sidebar::draw(f, app, chunks[1]);
     } else {
         // Workspace takes full screen width on all other tabs, or when sidebar is hidden
+        app.layout_zones.flash_summary = Rect::default();
         draw_workspace(f, app, area);
     }
 }

@@ -3,7 +3,16 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-pub const PROJECT_CONFIG_FIELD_COUNT: usize = 29;
+pub const PROJECT_CONFIG_FIELD_COUNT: usize = 30;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct FirmwareImage {
+    pub label: String,
+    pub path: String,
+    pub offset: String,
+    pub required: bool,
+    pub sha256: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -37,6 +46,9 @@ pub struct ProjectConfig {
     pub mes_endpoint: String,
     pub label_template: String,
     pub qa_test_script: String,
+    pub do_not_chg_bin: bool,
+    pub images: Vec<FirmwareImage>,
+    pub use_merged_flash: bool,
 }
 
 impl Default for ProjectConfig {
@@ -71,17 +83,26 @@ impl Default for ProjectConfig {
             mes_endpoint: String::new(),
             label_template: "QR+SN+MAC".to_string(),
             qa_test_script: "LED,BUTTON,WIFI".to_string(),
+            do_not_chg_bin: false,
+            images: Vec::new(),
+            use_merged_flash: false,
         }
     }
 }
 
 impl ProjectConfig {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, String> {
-        let mut file = File::open(path).map_err(|e| e.to_string())?;
+        let mut file = File::open(&path).map_err(|e| e.to_string())?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)
             .map_err(|e| e.to_string())?;
-        serde_json::from_str(&contents).map_err(|e| e.to_string())
+        let mut cfg: ProjectConfig = serde_json::from_str(&contents).map_err(|e| e.to_string())?;
+        
+        let base_dir = path.as_ref().parent().unwrap_or_else(|| Path::new(""));
+        cfg.resolve_relative_paths(base_dir);
+        cfg.populate_default_images_if_empty(base_dir);
+        
+        Ok(cfg)
     }
 
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
@@ -241,6 +262,7 @@ impl ProjectConfig {
             26 => self.mes_endpoint.clone(),
             27 => self.label_template.clone(),
             28 => self.qa_test_script.clone(),
+            29 => self.do_not_chg_bin.to_string(),
             _ => String::new(),
         }
     }
@@ -283,9 +305,304 @@ impl ProjectConfig {
             26 => self.mes_endpoint = value,
             27 => self.label_template = value,
             28 => self.qa_test_script = value,
+            29 => self.do_not_chg_bin = parse_bool_field(&value, self.do_not_chg_bin),
             _ => {}
         }
+        self.sync_flat_fields_to_images();
     }
+
+    pub fn resolve_relative_paths(&mut self, base_dir: &Path) {
+        let resolve = |p: &str| -> String {
+            if p.is_empty() {
+                return String::new();
+            }
+            let path = Path::new(p);
+            if path.is_absolute() {
+                p.to_string()
+            } else {
+                base_dir.join(path).to_string_lossy().to_string()
+            }
+        };
+
+        self.bootloader_path = resolve(&self.bootloader_path);
+        self.partitions_path = resolve(&self.partitions_path);
+        self.otadata_path = resolve(&self.otadata_path);
+        self.app_path = resolve(&self.app_path);
+
+        for img in &mut self.images {
+            img.path = resolve(&img.path);
+        }
+    }
+
+    pub fn populate_default_images_if_empty(&mut self, base_dir: &Path) {
+        if !self.images.is_empty() {
+            return;
+        }
+
+        // Try to look for factory_merged.bin
+        let merged_path = base_dir.join("factory_merged.bin");
+        if merged_path.exists() {
+            self.images.push(FirmwareImage {
+                label: "merged".to_string(),
+                path: merged_path.to_string_lossy().to_string(),
+                offset: "0x0000".to_string(),
+                required: true,
+                sha256: None,
+            });
+            return;
+        }
+
+        // Otherwise check default segmented names
+        let seg_files = [
+            ("bootloader", "bootloader.bin", "0x0000"),
+            ("partitions", "partitions.bin", "0x8000"),
+            ("boot_app0", "boot_app0.bin", "0xe000"),
+            ("firmware", "firmware.bin", "0x10000"),
+        ];
+
+        let mut found_any = false;
+        for &(label, filename, offset) in &seg_files {
+            let p = base_dir.join(filename);
+            if p.exists() {
+                self.images.push(FirmwareImage {
+                    label: label.to_string(),
+                    path: p.to_string_lossy().to_string(),
+                    offset: offset.to_string(),
+                    required: true,
+                    sha256: None,
+                });
+                found_any = true;
+            }
+        }
+
+        if found_any {
+            return;
+        }
+
+        // If nothing was found on disk in base_dir, populate from config's old fields if they are not empty
+        if !self.bootloader_path.is_empty() {
+            self.images.push(FirmwareImage {
+                label: "bootloader".to_string(),
+                path: self.bootloader_path.clone(),
+                offset: self.bootloader_offset.clone(),
+                required: true,
+                sha256: None,
+            });
+        }
+        if !self.partitions_path.is_empty() {
+            self.images.push(FirmwareImage {
+                label: "partitions".to_string(),
+                path: self.partitions_path.clone(),
+                offset: self.partitions_offset.clone(),
+                required: true,
+                sha256: None,
+            });
+        }
+        if !self.otadata_path.is_empty() {
+            self.images.push(FirmwareImage {
+                label: "boot_app0".to_string(),
+                path: self.otadata_path.clone(),
+                offset: self.otadata_offset.clone(),
+                required: true,
+                sha256: None,
+            });
+        }
+        if !self.app_path.is_empty() {
+            self.images.push(FirmwareImage {
+                label: "firmware".to_string(),
+                path: self.app_path.clone(),
+                offset: self.app_offset.clone(),
+                required: true,
+                sha256: None,
+            });
+        }
+    }
+
+    pub fn validate_manifest(&self) -> (Vec<ImageValidationResult>, Vec<String>) {
+        let mut image_results = Vec::new();
+        let mut errors = Vec::new();
+
+        // 1. Check chip type (only error if not Auto and not mappable)
+        let chip_lower = self.chip_type.to_lowercase();
+        if chip_lower != "auto" {
+            // A basic check to see if it starts with esp32
+            if !chip_lower.starts_with("esp32") && !chip_lower.starts_with("esp") {
+                errors.push(format!("Unsupported target chip type: '{}'", self.chip_type));
+            }
+        }
+
+        // 2. Track offsets to check for duplicates
+        let mut offset_map = std::collections::HashMap::new();
+
+        // 3. Validate each image in self.images
+        for img in &self.images {
+            let mut exists = false;
+            let mut size_bytes = None;
+            let mut sha256_match = None;
+            let mut img_error = None;
+
+            // Offset validation
+            let _offset_val = match parse_offset(&img.offset) {
+                Ok(val) => {
+                    // Check duplicate
+                    if let Some(prev_label) = offset_map.insert(val, img.label.clone()) {
+                        errors.push(format!(
+                            "Duplicate offset {:#x} configured for '{}' and '{}'",
+                            val, prev_label, img.label
+                        ));
+                    }
+                    Some(val)
+                }
+                Err(e) => {
+                    let err_msg = format!("Invalid offset '{}': {}", img.offset, e);
+                    errors.push(err_msg.clone());
+                    img_error = Some(err_msg);
+                    None
+                }
+            };
+
+            // Path & Exists validation
+            if img.path.is_empty() {
+                if img.required {
+                    errors.push(format!("Required image '{}' path is empty", img.label));
+                    img_error = Some("Path is empty".to_string());
+                }
+            } else {
+                let path = Path::new(&img.path);
+                if path.exists() {
+                    exists = true;
+                    if let Ok(metadata) = std::fs::metadata(path) {
+                        size_bytes = Some(metadata.len());
+                    }
+
+                    // SHA256 validation if specified
+                    if let Some(ref expected_sha) = img.sha256 {
+                        if !expected_sha.trim().is_empty() {
+                            match compute_file_sha256(&img.path) {
+                                Ok(computed) => {
+                                    let matches = computed.eq_ignore_ascii_case(expected_sha.trim());
+                                    sha256_match = Some(matches);
+                                    if !matches {
+                                        let err_msg = format!(
+                                            "SHA256 mismatch for '{}': expected {}, got {}",
+                                            img.label, expected_sha, computed
+                                        );
+                                        errors.push(err_msg.clone());
+                                        img_error = Some("SHA256 mismatch".to_string());
+                                    }
+                                }
+                                Err(e) => {
+                                    errors.push(format!("Failed to read file '{}' for SHA256 check: {}", img.label, e));
+                                    sha256_match = Some(false);
+                                    img_error = Some("SHA256 calculation failed".to_string());
+                                }
+                            }
+                        }
+                    }
+                } else if img.required {
+                    let err_msg = format!("Required file '{}' not found at: {}", img.label, img.path);
+                    errors.push(err_msg.clone());
+                    img_error = Some("File not found".to_string());
+                }
+            }
+
+            image_results.push(ImageValidationResult {
+                label: img.label.clone(),
+                offset: img.offset.clone(),
+                path: img.path.clone(),
+                size_bytes,
+                exists,
+                sha256_match,
+                error: img_error,
+            });
+        }
+
+        (image_results, errors)
+    }
+
+    pub fn sync_flat_fields_to_images(&mut self) {
+        let mut update_or_insert = |label: &str, path: &str, offset: &str| {
+            if path.is_empty() {
+                if let Some(pos) = self.images.iter().position(|img| img.label == label) {
+                    self.images.remove(pos);
+                }
+                return;
+            }
+            if let Some(img) = self.images.iter_mut().find(|img| img.label == label) {
+                img.path = path.to_string();
+                img.offset = offset.to_string();
+            } else {
+                self.images.push(FirmwareImage {
+                    label: label.to_string(),
+                    path: path.to_string(),
+                    offset: offset.to_string(),
+                    required: true,
+                    sha256: None,
+                });
+            }
+        };
+
+        update_or_insert("bootloader", &self.bootloader_path, &self.bootloader_offset);
+        update_or_insert("partitions", &self.partitions_path, &self.partitions_offset);
+        update_or_insert("boot_app0", &self.otadata_path, &self.otadata_offset);
+        update_or_insert("firmware", &self.app_path, &self.app_offset);
+    }
+
+    pub fn sync_images_to_flat_fields(&mut self) {
+        for img in &self.images {
+            match img.label.as_str() {
+                "bootloader" => {
+                    self.bootloader_path = img.path.clone();
+                    self.bootloader_offset = img.offset.clone();
+                }
+                "partitions" => {
+                    self.partitions_path = img.path.clone();
+                    self.partitions_offset = img.offset.clone();
+                }
+                "boot_app0" => {
+                    self.otadata_path = img.path.clone();
+                    self.otadata_offset = img.offset.clone();
+                }
+                "firmware" => {
+                    self.app_path = img.path.clone();
+                    self.app_offset = img.offset.clone();
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageValidationResult {
+    pub label: String,
+    pub offset: String,
+    pub path: String,
+    pub size_bytes: Option<u64>,
+    pub exists: bool,
+    pub sha256_match: Option<bool>,
+    pub error: Option<String>,
+}
+
+pub fn parse_offset(offset_str: &str) -> Result<u32, String> {
+    let clean = offset_str.trim().to_lowercase();
+    let clean = clean.trim_start_matches("0x").trim_start_matches("0x");
+    u32::from_str_radix(clean, 16).map_err(|e| format!("Invalid offset '{}': {}", offset_str, e))
+}
+
+fn compute_file_sha256(path: &str) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 4096];
+    loop {
+        let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn parse_bool_field(value: &str, current: bool) -> bool {
@@ -493,5 +810,159 @@ mod tests {
     fn test_platformio_flash_frequency_from_hz_literal() {
         assert_eq!(parse_flash_frequency("40000000L"), Some("40m".to_string()));
         assert_eq!(parse_flash_frequency("80000000L"), Some("80m".to_string()));
+    }
+
+    #[test]
+    fn test_offset_validation() {
+        assert_eq!(parse_offset("0x0000").unwrap(), 0);
+        assert_eq!(parse_offset("0x8000").unwrap(), 0x8000);
+        assert_eq!(parse_offset("0xe000").unwrap(), 0xe000);
+        assert_eq!(parse_offset("10000").unwrap(), 0x10000);
+        assert_eq!(parse_offset("0x10000").unwrap(), 0x10000);
+
+        assert!(parse_offset("0xG000").is_err());
+        assert!(parse_offset("xyz").is_err());
+    }
+
+    #[test]
+    fn test_manifest_validation() {
+        let mut config = ProjectConfig::default();
+        config.chip_type = "ESP32-S3".to_string();
+        config.images = vec![
+            FirmwareImage {
+                label: "bootloader".to_string(),
+                path: "".to_string(),
+                offset: "0x0000".to_string(),
+                required: true,
+                sha256: None,
+            },
+            FirmwareImage {
+                label: "duplicate".to_string(),
+                path: "".to_string(),
+                offset: "0x0000".to_string(),
+                required: false,
+                sha256: None,
+            }
+        ];
+
+        let (results, errors) = config.validate_manifest();
+        assert_eq!(results.len(), 2);
+        
+        assert!(errors.iter().any(|e| e.contains("Required image") && e.contains("empty")));
+        assert!(errors.iter().any(|e| e.contains("Duplicate offset")));
+    }
+
+    #[test]
+    fn test_sha256_validation() {
+        use std::io::Write;
+        
+        let temp_dir = std::env::temp_dir();
+        let file_path = temp_dir.join("piopulse_test_file.bin");
+        
+        let mut file = File::create(&file_path).unwrap();
+        file.write_all(b"piopulse_test_data").unwrap();
+        drop(file);
+
+        let correct_sha256 = "2dfe6dc78f8322abbfb36af2086218ea051519582191588cb0ff0b38d74a6a37";
+        let incorrect_sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+
+        let mut config = ProjectConfig::default();
+        config.images = vec![
+            FirmwareImage {
+                label: "test_correct".to_string(),
+                path: file_path.to_string_lossy().to_string(),
+                offset: "0x0000".to_string(),
+                required: true,
+                sha256: Some(correct_sha256.to_string()),
+            },
+            FirmwareImage {
+                label: "test_incorrect".to_string(),
+                path: file_path.to_string_lossy().to_string(),
+                offset: "0x1000".to_string(),
+                required: true,
+                sha256: Some(incorrect_sha256.to_string()),
+            }
+        ];
+
+        let (results, errors) = config.validate_manifest();
+        
+        assert_eq!(results[0].sha256_match, Some(true));
+        assert_eq!(results[1].sha256_match, Some(false));
+        
+        assert!(errors.iter().any(|e| e.contains("SHA256 mismatch")));
+        
+        let _ = std::fs::remove_file(file_path);
+    }
+
+    #[test]
+    fn test_esptool_command_generation() {
+        let mut config = ProjectConfig::default();
+        config.chip_type = "ESP32-S3".to_string();
+        config.baud_rate = 921600;
+        config.flash_mode = "dio".to_string();
+        config.flash_freq = "80m".to_string();
+        config.flash_size = "16MB".to_string();
+        config.nvs_offset = "0x9000".to_string();
+        config.do_not_chg_bin = false;
+        
+        config.images = vec![
+            FirmwareImage {
+                label: "bootloader".to_string(),
+                path: "bootloader.bin".to_string(),
+                offset: "0x0000".to_string(),
+                required: true,
+                sha256: None,
+            },
+            FirmwareImage {
+                label: "merged".to_string(),
+                path: "factory_merged.bin".to_string(),
+                offset: "0x0000".to_string(),
+                required: true,
+                sha256: None,
+            }
+        ];
+
+        let cmd_segmented = crate::worker::generate_esptool_command("/dev/ttyUSB0", &config, false);
+        assert!(cmd_segmented.contains("esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 921600 write_flash"));
+        assert!(cmd_segmented.contains("--flash_mode dio"));
+        assert!(cmd_segmented.contains("--flash_freq 80m"));
+        assert!(cmd_segmented.contains("--flash_size 16MB"));
+        assert!(cmd_segmented.contains("0x0000 bootloader.bin"));
+        assert!(!cmd_segmented.contains("factory_merged.bin"));
+        assert!(cmd_segmented.contains("0x9000 <dynamic_nvs.bin>"));
+
+        let cmd_merged = crate::worker::generate_esptool_command("/dev/ttyUSB0", &config, true);
+        assert!(cmd_merged.contains("0x0000 factory_merged.bin"));
+        assert!(!cmd_merged.contains("bootloader.bin"));
+
+        config.do_not_chg_bin = true;
+        let cmd_dont_chg = crate::worker::generate_esptool_command("/dev/ttyUSB0", &config, true);
+        assert!(cmd_dont_chg.contains("--flash_mode keep"));
+        assert!(cmd_dont_chg.contains("--flash_freq keep"));
+        assert!(cmd_dont_chg.contains("--flash_size keep"));
+    }
+
+    #[test]
+    fn test_set_field_syncs_to_images() {
+        let mut config = ProjectConfig::default();
+        assert!(config.images.is_empty());
+
+        // Set application firmware path
+        config.set_field(13, "new_firmware.bin".to_string());
+        assert_eq!(config.app_path, "new_firmware.bin");
+
+        // The images list should now have one entry for firmware
+        let fw_img = config.images.iter().find(|img| img.label == "firmware").unwrap();
+        assert_eq!(fw_img.path, "new_firmware.bin");
+        assert_eq!(fw_img.offset, "0x10000");
+
+        // Change offset
+        config.set_field(12, "0x20000".to_string());
+        let fw_img2 = config.images.iter().find(|img| img.label == "firmware").unwrap();
+        assert_eq!(fw_img2.offset, "0x20000");
+
+        // Clear path should remove it from images
+        config.set_field(13, "".to_string());
+        assert!(config.images.iter().find(|img| img.label == "firmware").is_none());
     }
 }

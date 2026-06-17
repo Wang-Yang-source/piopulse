@@ -11,7 +11,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-const SERIAL_OPTION_ROWS: usize = 4;
+const SERIAL_OPTION_ROWS: usize = 5;
 const SERIAL_OPTION_COUNT: usize = SERIAL_OPTION_ROWS * 2;
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
@@ -279,7 +279,7 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(5), // Port, baud, and monitor state
-            Constraint::Length(6), // Toggles / Settings
+            Constraint::Length(7), // Toggles / Settings (increased for DTR/RTS row)
             Constraint::Length(6), // Timeline / Parser Summary
             Constraint::Min(5),    // Quick Command Templates
         ])
@@ -430,12 +430,16 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let crlf_check = if app.serial_add_newline { "[X]" } else { "[ ]" };
     let rx_hex = if app.serial_hex_mode_rx { "[X]" } else { "[ ]" };
     let tx_hex = if app.serial_hex_mode_tx { "[X]" } else { "[ ]" };
+    let auto_reply_check = if app.serial_auto_reply_enabled { "[X]" } else { "[ ]" };
     let recording = if app.serial_recording { "[X]" } else { "[ ]" };
     let replaying = if app.serial_playback_active {
         "[X]"
     } else {
         "[ ]"
     };
+    let dtr_check = if app.serial_dtr_active { "[X]" } else { "[ ]" };
+    let rts_check = if app.serial_rts_active { "[X]" } else { "[ ]" };
+
     let option_cell_style = |idx| {
         if app.hover_serial_option == Some(idx) {
             Style::default()
@@ -480,24 +484,37 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
             "t",
             false,
             option_cell_style(4),
-            recording,
-            if lang == "zh" { "录制" } else { "REC" },
-            "r",
+            auto_reply_check,
+            if lang == "zh" { "自动回复" } else { "Auto-Reply" },
+            "a",
             false,
             option_cell_style(5),
             left_option_width,
         ),
         compact_option_line(
+            recording,
+            if lang == "zh" { "录制" } else { "REC" },
+            "r",
+            false,
+            option_cell_style(6),
             replaying,
             if lang == "zh" { "回放" } else { "PLAY" },
             "y",
             false,
-            option_cell_style(6),
-            "[ ]",
-            if lang == "zh" { "波特" } else { "Baud" },
-            "b",
-            false,
             option_cell_style(7),
+            left_option_width,
+        ),
+        compact_option_line(
+            dtr_check,
+            "DTR",
+            "d",
+            false,
+            option_cell_style(8),
+            rts_check,
+            "RTS",
+            "g",
+            false,
+            option_cell_style(9),
             left_option_width,
         ),
     ];

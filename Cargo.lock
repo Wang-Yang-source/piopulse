@@ -961,7 +961,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "piopulse"
-version = "0.2.2"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "crc32fast",
@@ -970,9 +970,11 @@ dependencies = [
  "futures",
  "rand",
  "ratatui",
+ "regex",
  "serde",
  "serde_json",
  "serialport",
+ "sha2",
  "tokio",
  "unicode-width 0.2.2",
 ]

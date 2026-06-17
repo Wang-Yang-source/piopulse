@@ -95,6 +95,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             tr("config_qa_test_script", lang),
             cfg.qa_test_script.clone(),
         ),
+        (
+            tr("config_do_not_chg_bin", lang),
+            cfg.do_not_chg_bin.to_string(),
+        ),
     ];
 
     let mut rows = Vec::new();

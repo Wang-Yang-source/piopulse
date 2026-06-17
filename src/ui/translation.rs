@@ -855,9 +855,9 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
         }
         "flash_devices_count" => {
             if is_zh {
-                "  设备总数: "
+                "  端口总数: "
             } else {
-                "  Devices Count: "
+                "  Total Ports: "
             }
         }
         "flash_idle_count" => {
@@ -876,16 +876,16 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
         }
         "flash_success_count" => {
             if is_zh {
-                "  |  成功: "
+                "  |  当前成功: "
             } else {
-                "  |  Success: "
+                "  |  Current Pass: "
             }
         }
         "flash_failed_count" => {
             if is_zh {
-                "  |  失败: "
+                "  |  当前失败: "
             } else {
-                "  |  Failed: "
+                "  |  Current Fail: "
             }
         }
         "flash_detecting" => {
@@ -1135,6 +1135,13 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
                 "QA Test Script:"
             }
         }
+        "config_do_not_chg_bin" => {
+            if is_zh {
+                "禁止修改Bin头:"
+            } else {
+                "Do Not Chg Bin:"
+            }
+        }
         "config_inspector_title" => {
             if is_zh {
                 " 检查器 "
@@ -1216,35 +1223,35 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
         // Sidebar Panel (sidebar.rs)
         "sidebar_stats_title" => {
             if is_zh {
-                " 生产数据统计 "
+                " 累计生产数据 "
             } else {
-                " Production Statistics "
+                " Cumulative Stats "
             }
         }
         "sidebar_total_attempted" => {
             if is_zh {
-                "总尝试次数: "
+                "累计尝试: "
             } else {
                 "Total Attempted: "
             }
         }
         "sidebar_passed" => {
             if is_zh {
-                "成功次数 (OK):     "
+                "累计成功 (OK):     "
             } else {
                 "Passed (OK):     "
             }
         }
         "sidebar_failed" => {
             if is_zh {
-                "失败次数 (FAIL):   "
+                "累计失败 (FAIL):   "
             } else {
                 "Failed (FAIL):   "
             }
         }
         "sidebar_yield_rate" => {
             if is_zh {
-                "良率:            "
+                "累计良率:          "
             } else {
                 "Yield Rate:      "
             }
