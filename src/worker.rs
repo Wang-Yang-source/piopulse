@@ -668,16 +668,16 @@ fn describe_security_policy(config: &ProjectConfig) -> String {
     }
 }
 
-
-
 fn parse_progress(line: &str) -> Option<u8> {
     if let Some(idx) = line.find('%') {
         let before = &line[..idx];
-        let number_chars: String = before.chars()
+        let number_chars: String = before
+            .chars()
             .rev()
             .take_while(|c| c.is_ascii_digit() || *c == ' ' || *c == '(')
             .collect();
-        let number_str: String = number_chars.chars()
+        let number_str: String = number_chars
+            .chars()
             .filter(|c| c.is_ascii_digit())
             .collect::<Vec<_>>()
             .into_iter()
@@ -692,6 +692,8 @@ fn parse_progress(line: &str) -> Option<u8> {
     None
 }
 
+static PIO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct PlatformIoUploadBackend;
 
 impl FlasherBackend for PlatformIoUploadBackend {
@@ -701,8 +703,8 @@ impl FlasherBackend for PlatformIoUploadBackend {
         config: &ProjectConfig,
         tx: &Sender<WorkerMessage>,
     ) -> Result<Option<String>, String> {
-        use std::process::{Command, Stdio};
         use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
 
         let port_name = match selector {
             DeviceSelector::SerialPort(p) => p.clone(),
@@ -710,20 +712,40 @@ impl FlasherBackend for PlatformIoUploadBackend {
         };
 
         let app_path = std::path::Path::new(&config.app_path);
-        let env_name = app_path.parent()
+        let env_name = app_path
+            .parent()
             .and_then(|p| p.file_name())
             .and_then(|f| f.to_str())
-            .ok_or_else(|| "Could not determine PlatformIO environment name from firmware path".to_string())?;
+            .ok_or_else(|| {
+                "Could not determine PlatformIO environment name from firmware path".to_string()
+            })?;
 
-        let project_dir = app_path.parent() // <env_name>
-            .and_then(|p| p.parent())       // build
-            .and_then(|p| p.parent())       // .pio
-            .and_then(|p| p.parent())       // project root
-            .ok_or_else(|| "Could not determine PlatformIO project root from firmware path".to_string())?;
+        let project_dir = app_path
+            .parent() // <env_name>
+            .and_then(|p| p.parent()) // build
+            .and_then(|p| p.parent()) // .pio
+            .and_then(|p| p.parent()) // project root
+            .ok_or_else(|| {
+                "Could not determine PlatformIO project root from firmware path".to_string()
+            })?;
+
+        let _ = tx.blocking_send(WorkerMessage::StatusUpdate {
+            port: port_name.clone(),
+            status: "Queued (Waiting)...".to_string(),
+            progress: 0,
+            speed: "N/A".to_string(),
+        });
+
+        let _lock = PIO_LOCK
+            .lock()
+            .map_err(|e| format!("Failed to acquire global build lock: {}", e))?;
 
         let _ = tx.blocking_send(WorkerMessage::Log {
             port: port_name.clone(),
-            message: format!("Launching: pio run -t upload --upload-port {} -e {}", port_name, env_name),
+            message: format!(
+                "Launching: pio run -t upload --upload-port {} -e {}",
+                port_name, env_name
+            ),
         });
 
         let _ = tx.blocking_send(WorkerMessage::StatusUpdate {
@@ -734,15 +756,29 @@ impl FlasherBackend for PlatformIoUploadBackend {
         });
 
         let mut child = Command::new("pio")
-            .args(&["run", "-t", "upload", "--upload-port", &port_name, "-e", env_name])
+            .args(&[
+                "run",
+                "-t",
+                "upload",
+                "--upload-port",
+                &port_name,
+                "-e",
+                env_name,
+            ])
             .current_dir(project_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("Failed to spawn PlatformIO process: {}", e))?;
 
-        let stdout = child.stdout.take().ok_or_else(|| "Failed to capture stdout".to_string())?;
-        let stderr = child.stderr.take().ok_or_else(|| "Failed to capture stderr".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "Failed to capture stdout".to_string())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "Failed to capture stderr".to_string())?;
 
         let tx_clone = tx.clone();
         let port_clone = port_name.clone();
@@ -782,7 +818,9 @@ impl FlasherBackend for PlatformIoUploadBackend {
             }
         });
 
-        let status = child.wait().map_err(|e| format!("Failed to wait for PlatformIO process: {}", e))?;
+        let status = child
+            .wait()
+            .map_err(|e| format!("Failed to wait for PlatformIO process: {}", e))?;
 
         let _ = log_thread.join();
         let _ = err_thread.join();

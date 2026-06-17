@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::new(config_path);
 
     // Initial port scan
-    app.scan_ports();
+    app.scan_ports(None);
 
     // Create channel for worker messages
     let (tx, mut rx) = mpsc::channel(100);
@@ -124,9 +124,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ = interval.tick() => {
                 app.tick();
 
-                // Scan ports automatically every 2 seconds if not flashing
-                if !app.is_flashing && app.last_port_scan.elapsed() > Duration::from_secs(2) {
-                    app.scan_ports();
+                // Scan ports automatically every 2 seconds
+                if app.last_port_scan.elapsed() > Duration::from_secs(2) {
+                    app.scan_ports(Some(tx.clone()));
                     app.last_port_scan = std::time::Instant::now();
                 }
             }
@@ -366,6 +366,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.is_adding_widget = true;
                                                 app.widget_search_input.clear();
                                                 app.add_menu_selected = 0;
+                                            } else if app.active_tab == ActiveTab::Flasher {
+                                                app.auto_flash = !app.auto_flash;
+                                                app.log(format!("Auto-Flash mode: {}", if app.auto_flash { "ENABLED" } else { "DISABLED" }));
                                             }
                                         }
                                         KeyCode::Char('d') | KeyCode::Char('D') => {

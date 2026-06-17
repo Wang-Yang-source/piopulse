@@ -125,6 +125,20 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 },
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
+            Span::styled(
+                "a",
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if lang == "zh" {
+                    "自动感应 "
+                } else {
+                    "Auto-Flash "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
         ]);
     }
 

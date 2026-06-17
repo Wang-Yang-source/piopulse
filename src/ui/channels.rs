@@ -135,6 +135,38 @@ fn draw_empty_state(f: &mut Frame, app: &mut App, area: Rect) {
                     Style::default().fg(CATPPUCCIN_MOCHA.primary),
                 ),
             ]),
+            Line::from(vec![
+                Span::styled(
+                    if lang == "zh" {
+                        "   自动感应烧录: "
+                    } else {
+                        "   Auto-Flash: "
+                    },
+                    Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+                ),
+                Span::styled(
+                    if app.auto_flash {
+                        if lang == "zh" {
+                            "启用 [按A键禁用]"
+                        } else {
+                            "ENABLED [Press A to disable]"
+                        }
+                    } else {
+                        if lang == "zh" {
+                            "禁用 [按A键启用]"
+                        } else {
+                            "DISABLED [Press A to enable]"
+                        }
+                    },
+                    Style::default()
+                        .fg(if app.auto_flash {
+                            CATPPUCCIN_MOCHA.success
+                        } else {
+                            CATPPUCCIN_MOCHA.text_disabled
+                        })
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
             Line::from(""),
         ]);
     }
@@ -221,6 +253,22 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
                 .fg(CATPPUCCIN_MOCHA.danger)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::raw(" | "),
+        Span::raw(if lang == "zh" {
+            "自动感应: "
+        } else {
+            "Auto-Flash: "
+        }),
+        Span::styled(
+            if app.auto_flash { "ON" } else { "OFF" },
+            Style::default()
+                .fg(if app.auto_flash {
+                    CATPPUCCIN_MOCHA.success
+                } else {
+                    CATPPUCCIN_MOCHA.text_muted
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
     ])];
 
     summary_lines.push(Line::from(vec![
@@ -230,6 +278,8 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
         flash_action_span(1, app.hover_flash_action, lang),
         Span::raw("  "),
         flash_action_span(2, app.hover_flash_action, lang),
+        Span::raw("  "),
+        flash_action_span(3, app.hover_flash_action, lang),
     ]));
 
     summary_lines.push(Line::from(vec![
@@ -351,7 +401,7 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
                 &channel.status
             };
             (
-                format!("⟳ {}", status_disp),
+                status_disp.to_string(),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.warning)
                     .add_modifier(Modifier::BOLD),
@@ -505,19 +555,19 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
 fn make_progress_bar(pct: u8, width: usize) -> String {
     let filled = (pct as usize * width) / 100;
     let empty = width - filled;
-    format!("[{}{}] {:>3}%", "█".repeat(filled), "░".repeat(empty), pct)
+    format!("[{}{}] {:>3}%", "=".repeat(filled), " ".repeat(empty), pct)
 }
 
 pub fn flash_action_label(idx: usize, lang: &str) -> &'static str {
     match (idx, lang == "zh") {
-        (0, true) => "[烧录选中]",
-        (0, false) => "[Flash Sel]",
-        (1, true) => "[批量]",
-        (1, false) => "[Batch]",
-        (2, true) => "[扫描]",
-        (2, false) => "[Scan]",
-        (3, true) => "[配置]",
-        (3, false) => "[Config]",
+        (0, true) => "烧录选中",
+        (0, false) => "Flash Sel",
+        (1, true) => "批量",
+        (1, false) => "Batch",
+        (2, true) => "扫描",
+        (2, false) => "Scan",
+        (3, true) => "配置",
+        (3, false) => "Config",
         _ => "",
     }
 }
@@ -531,9 +581,10 @@ fn flash_action_span(idx: usize, hover: Option<usize>, lang: &str) -> Span<'stat
     } else {
         Style::default()
             .fg(CATPPUCCIN_MOCHA.accent)
+            .bg(mocha::SURFACE0)
             .add_modifier(Modifier::BOLD)
     };
-    Span::styled(flash_action_label(idx, lang), style)
+    Span::styled(format!(" {} ", flash_action_label(idx, lang)), style)
 }
 
 fn flash_table_title(lang: &str, scroll: usize, visible_rows: usize, total: usize) -> String {

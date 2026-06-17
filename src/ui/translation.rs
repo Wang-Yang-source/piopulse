@@ -778,16 +778,16 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
         // Channels / Flasher Tab (channels.rs)
         "flash_engine_title" => {
             if is_zh {
-                " 🔋 批量烧录引擎 "
+                " 批量烧录引擎 "
             } else {
-                " 🔋 BATCH FLASHER ENGINE "
+                " Batch Flasher Engine "
             }
         }
         "flash_no_devices" => {
             if is_zh {
-                "   ⚠️  未检测到活动的烧录设备。"
+                "   未检测到活动的烧录设备。"
             } else {
-                "   ⚠️  No active flashing devices detected."
+                "   No active flashing devices detected."
             }
         }
         "flash_target_chip" => {
@@ -820,16 +820,16 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
         }
         "flash_connect_usb" => {
             if is_zh {
-                "   🔌 连接 USB 设备以自动扫描并开始烧录..."
+                "   连接 USB 设备以自动扫描并开始烧录..."
             } else {
-                "   🔌 Connect USB devices to auto-scan and begin flashing..."
+                "   Connect USB devices to auto-scan and begin flashing..."
             }
         }
         "flash_hint" => {
             if is_zh {
-                "   ⚡ 提示: 按 "
+                "   提示: 按 "
             } else {
-                "   ⚡ Hint: Press "
+                "   Hint: Press "
             }
         }
         "flash_spacebar" => {
@@ -862,30 +862,30 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
         }
         "flash_idle_count" => {
             if is_zh {
-                "  |  ● 空闲: "
+                "  |  空闲: "
             } else {
-                "  |  ● Idle: "
+                "  |  Idle: "
             }
         }
         "flash_flashing_count" => {
             if is_zh {
-                "  |  ⟳ 烧录中: "
+                "  |  烧录中: "
             } else {
-                "  |  ⟳ Flashing: "
+                "  |  Flashing: "
             }
         }
         "flash_success_count" => {
             if is_zh {
-                "  |  ✓ 成功: "
+                "  |  成功: "
             } else {
-                "  |  ✓ Success: "
+                "  |  Success: "
             }
         }
         "flash_failed_count" => {
             if is_zh {
-                "  |  ✗ 失败: "
+                "  |  失败: "
             } else {
-                "  |  ✗ Failed: "
+                "  |  Failed: "
             }
         }
         "flash_detecting" => {
@@ -897,23 +897,23 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
         }
         "flash_status_success" => {
             if is_zh {
-                "✓ 成功"
+                "成功"
             } else {
-                "✓ SUCCESS"
+                "SUCCESS"
             }
         }
         "flash_status_failed" => {
             if is_zh {
-                "✗ 失败 ({})"
+                "失败 ({})"
             } else {
-                "✗ FAILED ({})"
+                "FAILED ({})"
             }
         }
         "flash_status_idle" => {
             if is_zh {
-                "● 空闲"
+                "空闲"
             } else {
-                "● Idle"
+                "Idle"
             }
         }
         "flash_devices_title" => {

@@ -204,6 +204,7 @@ pub struct App {
     pub tool_settings_selected: usize,
     pub show_port_menu: bool,
     pub port_menu_selected: usize,
+    pub auto_flash: bool,
 
     // UI state
     pub active_tab: ActiveTab,
@@ -426,6 +427,7 @@ impl App {
             splash_ticks_remaining: Some(SPLASH_TICKS),
             flash_success_ticks_remaining: None,
             serial_frame_format: "8-N-1".to_string(),
+            auto_flash: false,
         };
 
         crate::vofa::ACTIVE_VOFA_MODE
@@ -454,25 +456,43 @@ impl App {
         self.log(format!("[{}] {}", port, msg.into()));
     }
 
-    pub fn scan_ports(&mut self) {
-        if self.is_flashing {
-            return;
-        }
-
+    pub fn scan_ports(&mut self, tx: Option<tokio::sync::mpsc::Sender<WorkerMessage>>) {
         let ports = worker::get_available_serial_ports();
 
-        // Check if the ports list has changed
-        let has_changed = if ports.len() != self.channels.len() {
-            true
-        } else {
-            ports
-                .iter()
-                .zip(self.channels.iter())
-                .any(|(p, c)| p.name != c.port)
-        };
+        let mut new_channels = Vec::new();
+        let mut updated = false;
+        let mut newly_added_ports = Vec::new();
 
-        if has_changed {
-            self.channels = ports.into_iter().map(|p| Channel::new(p)).collect();
+        // 1. Reconcile currently connected ports with existing channels
+        for p in ports {
+            if let Some(existing_idx) = self.channels.iter().position(|c| c.port == p.name) {
+                // Keep existing channel to preserve state (flashing progress/results)
+                new_channels.push(self.channels.remove(existing_idx));
+            } else {
+                // This is a newly plugged in device!
+                let chan = Channel::new(p.clone());
+                new_channels.push(chan);
+                newly_added_ports.push(p.name.clone());
+                updated = true;
+            }
+        }
+
+        // Any channels left in self.channels were unplugged
+        if !self.channels.is_empty() {
+            let removed_ports: Vec<String> = self
+                .channels
+                .iter()
+                .map(|channel| channel.port.clone())
+                .collect();
+            for port in removed_ports {
+                self.log(format!("Device unplugged: {}", port));
+            }
+            updated = true;
+        }
+
+        self.channels = new_channels;
+
+        if updated {
             self.log(format!(
                 "Ports updated. Found {} active devices.",
                 self.channels.len()
@@ -485,6 +505,25 @@ impl App {
                     .len()
                     .saturating_sub(self.layout_zones.flash_device_table.height as usize),
             );
+
+            // Auto-trigger flashing if auto_flash mode is active and new ports were added
+            if self.auto_flash && !newly_added_ports.is_empty() {
+                if let Some(tx_chan) = tx {
+                    let mut indices_to_flash = Vec::new();
+                    for port_name in newly_added_ports {
+                        if let Some(idx) = self.channels.iter().position(|c| c.port == port_name) {
+                            indices_to_flash.push(idx);
+                        }
+                    }
+                    if !indices_to_flash.is_empty() {
+                        self.start_flashing_indices(
+                            indices_to_flash,
+                            tx_chan,
+                            "newly connected device(s)",
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1441,7 +1480,7 @@ impl App {
         }
 
         use unicode_width::UnicodeWidthStr;
-        let title = format!(" ☕ PIOPULSE v{} ", env!("CARGO_PKG_VERSION"));
+        let title = format!(" PIOPULSE v{} ", env!("CARGO_PKG_VERSION"));
         let mode = if self.admin_mode {
             crate::ui::tr("admin_mode_header", &self.tool_config.language)
         } else {
@@ -1466,7 +1505,7 @@ impl App {
         let mut cursor = 2;
         for idx in 0..4 {
             let label = crate::ui::channels::flash_action_label(idx, lang);
-            let width = UnicodeWidthStr::width(label);
+            let width = UnicodeWidthStr::width(label) + 2;
             if (cursor..cursor + width).contains(&relative_col) {
                 return Some(idx);
             }
@@ -1674,7 +1713,7 @@ impl App {
         if self.active_tab == ActiveTab::Flasher {
             if self.channels.is_empty() {
                 if self.is_inside_rect(col, row, self.layout_zones.flash_empty_state) {
-                    self.scan_ports();
+                    self.scan_ports(Some(tx.clone()));
                     self.log("Manual port scan requested from flasher empty state.");
                     return true;
                 }
@@ -1689,7 +1728,7 @@ impl App {
                             if self.is_flashing {
                                 self.log("Cannot rescan while flashing is active.");
                             } else {
-                                self.scan_ports();
+                                self.scan_ports(Some(tx.clone()));
                                 self.log("Manual port scan requested from flasher dashboard.");
                             }
                         }
@@ -2859,11 +2898,11 @@ mod tests {
         for idx in 0..4 {
             assert_eq!(app.flash_summary_action_at(cursor as u16, 2), Some(idx));
             cursor +=
-                UnicodeWidthStr::width(crate::ui::channels::flash_action_label(idx, lang)) + 2;
+                UnicodeWidthStr::width(crate::ui::channels::flash_action_label(idx, lang)) + 4;
         }
 
         let config_x =
-            cursor - UnicodeWidthStr::width(crate::ui::channels::flash_action_label(3, lang)) - 2;
+            cursor - UnicodeWidthStr::width(crate::ui::channels::flash_action_label(3, lang)) - 4;
         assert!(app.handle_mouse_click(config_x as u16, 2, tx));
         assert_eq!(app.active_tab, ActiveTab::Configuration);
 
@@ -3087,10 +3126,10 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.layout_zones.header = ratatui::layout::Rect::new(0, 0, 80, 2);
 
-        let mode_x = UnicodeWidthStr::width(
-            format!(" ☕ PIOPULSE v{} ", env!("CARGO_PKG_VERSION")).as_str(),
-        ) + UnicodeWidthStr::width(" | ")
-            + 1;
+        let mode_x =
+            UnicodeWidthStr::width(format!(" PIOPULSE v{} ", env!("CARGO_PKG_VERSION")).as_str())
+                + UnicodeWidthStr::width(" | ")
+                + 1;
         assert!(app.handle_mouse_click(mode_x as u16, 0, tx));
         assert!(app.is_entering_password);
 
