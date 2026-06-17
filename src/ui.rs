@@ -259,7 +259,7 @@ fn draw_splash_screen(f: &mut Frame, app: &App) {
     // Render 3D rotating wireframe globe on Canvas
     let anim_area = chunks[3];
     let aspect = (anim_area.width as f64 / anim_area.height as f64) * 0.5;
-    let x_limit = 25.0 * aspect;
+    let x_limit = 12.0 * aspect;
 
     let canvas = Canvas::default()
         .x_bounds([-x_limit, x_limit])
@@ -295,7 +295,7 @@ fn draw_splash_screen(f: &mut Frame, app: &App) {
                     // Perspective projection
                     let dist = 15.0;
                     let scale = 15.0 / (dist - z_rot);
-                    let sx = x_rot * scale * 1.5;
+                    let sx = x_rot * scale;
                     let sy = y_rot * scale;
 
                     // Color based on whether it is in front or back
@@ -324,7 +324,8 @@ fn draw_splash_screen(f: &mut Frame, app: &App) {
                 let mut prev_point: Option<(f64, f64)> = None;
                 let steps = 24;
                 for step in 0..=steps {
-                    let lat = (step as f64) * (2.0 * std::f64::consts::PI / steps as f64) - std::f64::consts::PI;
+                    let lat = (step as f64) * (2.0 * std::f64::consts::PI / steps as f64)
+                        - std::f64::consts::PI;
                     let z = lat.sin() * 6.0;
                     let r_lat = lat.cos() * 6.0;
 
@@ -344,7 +345,7 @@ fn draw_splash_screen(f: &mut Frame, app: &App) {
                     // Perspective projection
                     let dist = 15.0;
                     let scale = 15.0 / (dist - z_rot);
-                    let sx = x_rot * scale * 1.5;
+                    let sx = x_rot * scale;
                     let sy = y_rot * scale;
 
                     let color = if z_rot > 0.0 {
