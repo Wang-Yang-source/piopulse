@@ -1,8 +1,8 @@
 [package]
 name = "piopulse"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
-description = "A terminal user interface (TUI) factory flashing tool designed for high-concurrency ESP32 chip flashing on production lines."
+description = "A terminal user interface (TUI) embedded debugger for serial debugging, telemetry plotting, dashboards, and ESP32 flashing."
 license = "MIT"
 repository = "https://github.com/Wang-Yang-source/piopulse"
 readme = "README.md"

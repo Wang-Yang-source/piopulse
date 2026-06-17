@@ -190,38 +190,63 @@ jobs:
             git config --global user.email "github-actions[bot]@users.noreply.github.com"
             
             VERSION=${{ needs.release.outputs.release_version }}
+            OWNER=${{ github.repository_owner }}
             
             # Read SHA256 checksums
             SHA_MAC_ARM=$(cat artifacts/piopulse-macos-aarch64.tar.gz.sha256 | awk '{print $1}')
             SHA_MAC_X64=$(cat artifacts/piopulse-macos-x86_64.tar.gz.sha256 | awk '{print $1}')
             SHA_LINUX_X64=$(cat artifacts/piopulse-linux-x86_64.tar.gz.sha256 | awk '{print $1}')
             SHA_WIN_X64=$(cat artifacts/piopulse-windows-x86_64.zip.sha256 | awk '{print $1}')
+
+            repo_url() {
+              echo "https://x-access-token:${GH_PAT}@github.com/${OWNER}/$1.git"
+            }
+
+            repo_exists() {
+              curl --silent --fail -I -H "Authorization: Bearer ${GH_PAT}" "https://api.github.com/repos/${OWNER}/$1" >/dev/null 2>&1
+            }
             
             # 1. Update Homebrew tap
-            git clone https://x-access-token:${GH_PAT}@github.com/${{ github.repository_owner }}/homebrew-tap.git
-            cd homebrew-tap
-            mkdir -p Formula
-            cat ../packaging/brew/piopulse.rb | \
-              sed "s/version \"0.1.1\"/version \"${VERSION}\"/g" | \
-              sed "s/INSERT_MACOS_AARCH64_SHA256_HERE/${SHA_MAC_ARM}/g" | \
-              sed "s/INSERT_MACOS_X86_64_SHA256_HERE/${SHA_MAC_X64}/g" | \
-              sed "s/INSERT_LINUX_X86_64_SHA256_HERE/${SHA_LINUX_X64}/g" > Formula/piopulse.rb
-            git add Formula/piopulse.rb
-            git commit -m "bump: piopulse to v${VERSION}" || true
-            git push origin master || true
-            cd ..
+            if repo_exists "homebrew-tap"; then
+              git clone "$(repo_url "homebrew-tap")"
+              cd homebrew-tap
+              mkdir -p Formula
+              cat ../packaging/brew/piopulse.rb | \
+                sed "s/version \"0.1.1\"/version \"${VERSION}\"/g" | \
+                sed "s/INSERT_MACOS_AARCH64_SHA256_HERE/${SHA_MAC_ARM}/g" | \
+                sed "s/INSERT_MACOS_X86_64_SHA256_HERE/${SHA_MAC_X64}/g" | \
+                sed "s/INSERT_LINUX_X86_64_SHA256_HERE/${SHA_LINUX_X64}/g" > Formula/piopulse.rb
+              git add Formula/piopulse.rb
+              if ! git diff --cached --quiet; then
+                git commit -m "bump: piopulse to v${VERSION}"
+                git push origin HEAD
+              else
+                echo "Homebrew formula already up to date."
+              fi
+              cd ..
+            else
+              echo "::warning::Skipping Homebrew publish: ${OWNER}/homebrew-tap does not exist or GH_PAT cannot access it."
+            fi
             
             # 2. Update Scoop bucket
-            git clone https://x-access-token:${GH_PAT}@github.com/${{ github.repository_owner }}/scoop-bucket.git
-            cd scoop-bucket
-            cat ../packaging/scoop/piopulse.json | \
-              sed "s/\"version\": \"0.1.1\"/\"version\": \"${VERSION}\"/g" | \
-              sed "s/releases\/download\/v0.1.1/releases\/download\/${{ github.ref_name }}/g" | \
-              sed "s/INSERT_WINDOWS_X86_64_SHA256_HERE/${SHA_WIN_X64}/g" > piopulse.json
-            git add piopulse.json
-            git commit -m "bump: piopulse to v${VERSION}" || true
-            git push origin master || true
-            cd ..
+            if repo_exists "scoop-bucket"; then
+              git clone "$(repo_url "scoop-bucket")"
+              cd scoop-bucket
+              cat ../packaging/scoop/piopulse.json | \
+                sed "s/\"version\": \"0.1.1\"/\"version\": \"${VERSION}\"/g" | \
+                sed "s/releases\/download\/v0.1.1/releases\/download\/${{ github.ref_name }}/g" | \
+                sed "s/INSERT_WINDOWS_X86_64_SHA256_HERE/${SHA_WIN_X64}/g" > piopulse.json
+              git add piopulse.json
+              if ! git diff --cached --quiet; then
+                git commit -m "bump: piopulse to v${VERSION}"
+                git push origin HEAD
+              else
+                echo "Scoop manifest already up to date."
+              fi
+              cd ..
+            else
+              echo "::warning::Skipping Scoop publish: ${OWNER}/scoop-bucket does not exist or GH_PAT cannot access it."
+            fi
           else
             echo "GH_PAT secret is not set, skipping Homebrew and Scoop publishing."
           fi

@@ -46,6 +46,32 @@ fn restore_terminal() {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse command line arguments
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "--version" | "-v" | "version" => {
+                println!("piopulse {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "--help" | "-h" | "help" => {
+                println!("PioPulse - ESP32 Factory Flashing TUI Tool");
+                println!();
+                println!("Usage:");
+                println!("  piopulse [options]");
+                println!();
+                println!("Options:");
+                println!("  -h, --help     Show this help message");
+                println!("  -v, --version  Show version information");
+                return Ok(());
+            }
+            _ => {
+                eprintln!("Error: Unknown argument '{}'", args[1]);
+                eprintln!("Run 'piopulse --help' for usage details.");
+                std::process::exit(1);
+            }
+        }
+    }
     // Setup panic hook to restore terminal
     std::panic::set_hook(Box::new(|info| {
         restore_terminal();
