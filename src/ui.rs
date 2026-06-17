@@ -15,15 +15,21 @@ pub use translation::tr;
 pub use utils::center_rect;
 
 use crate::app::{ActiveTab, App};
+use crate::ui::theme::{CATPPUCCIN_MOCHA, mocha};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::canvas::Canvas,
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    if app.splash_ticks_remaining.is_some() {
+        draw_splash_screen(f, app);
+        return;
+    }
     // Main layout: Vertical split for Header, Main Body, Footer
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -186,4 +192,192 @@ pub fn tab_titles_for_width(lang: &str, width: u16) -> [&'static str; 5] {
     } else {
         compact
     }
+}
+
+fn draw_splash_screen(f: &mut Frame, app: &App) {
+    let area = f.size();
+
+    // Clear screen with Mantle background
+    f.render_widget(Clear, area);
+    let bg_block = Block::default().style(Style::default().bg(mocha::MANTLE));
+    f.render_widget(bg_block, area);
+
+    // Split area
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Top margin
+            Constraint::Length(6), // ASCII Title (needs 6 lines)
+            Constraint::Length(1), // Subtitle
+            Constraint::Min(5),    // Galaxy Animation
+            Constraint::Length(2), // Skip hint
+        ])
+        .split(area);
+
+    let logo = vec![
+        Line::from(Span::styled(
+            " ██████╗ ██╗ ██████╗ ██████╗ ██╗   ██╗██╗     ███████╗",
+            Style::default().fg(CATPPUCCIN_MOCHA.accent),
+        )),
+        Line::from(Span::styled(
+            " ██╔══██╗██║██╔═══██╗██╔══██╗██║   ██║██║     ██╔════╝",
+            Style::default().fg(CATPPUCCIN_MOCHA.primary),
+        )),
+        Line::from(Span::styled(
+            " ██████╔╝██║██║   ██║██████╔╝██║   ██║██║     █████╗  ",
+            Style::default().fg(CATPPUCCIN_MOCHA.info),
+        )),
+        Line::from(Span::styled(
+            " ██╔═══╝ ██║██║   ██║██╔═══╝ ██║   ██║██║     ██╔══╝  ",
+            Style::default().fg(CATPPUCCIN_MOCHA.success),
+        )),
+        Line::from(Span::styled(
+            " ██║     ██║╚██████╔╝██║     ╚██████╔╝███████╗███████╗",
+            Style::default().fg(CATPPUCCIN_MOCHA.warning),
+        )),
+        Line::from(Span::styled(
+            " ╚═╝     ╚═╝ ╚═════╝ ╚═╝      ╚═════╝ ╚══════╝╚══════╝",
+            Style::default().fg(CATPPUCCIN_MOCHA.danger),
+        )),
+    ];
+
+    let logo_paragraph = Paragraph::new(logo).alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(logo_paragraph, chunks[1]);
+
+    let subtitle = Paragraph::new(Line::from(vec![
+        Span::styled("▼ ", Style::default().fg(CATPPUCCIN_MOCHA.success)),
+        Span::styled(
+            "Terminal Embedded Debugger & Flashing Tool v0.2.1",
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text_muted)
+                .add_modifier(Modifier::ITALIC),
+        ),
+    ]))
+    .alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(subtitle, chunks[2]);
+
+    // Render 3D rotating wireframe globe on Canvas
+    let anim_area = chunks[3];
+    let aspect = (anim_area.width as f64 / anim_area.height as f64) * 0.5;
+    let x_limit = 25.0 * aspect;
+
+    let canvas = Canvas::default()
+        .x_bounds([-x_limit, x_limit])
+        .y_bounds([-12.0, 12.0])
+        .paint(|ctx| {
+            let t = app.anim_tick as f64;
+            let pitch: f64 = 0.45; // tilt
+            let yaw: f64 = t * 0.08; // rotation speed
+
+            // Parallels (latitude lines)
+            for lat_idx in -4..=4 {
+                let lat = (lat_idx as f64) * (std::f64::consts::PI / 10.0);
+                let z = lat.sin() * 6.0;
+                let r_lat = lat.cos() * 6.0;
+
+                let mut prev_point: Option<(f64, f64)> = None;
+                let steps = 30;
+                for step in 0..=steps {
+                    let lon = (step as f64) * (2.0 * std::f64::consts::PI / steps as f64);
+                    let x = r_lat * lon.cos();
+                    let y = r_lat * lon.sin();
+
+                    // Rotate Z (yaw)
+                    let x1 = x * yaw.cos() - y * yaw.sin();
+                    let y1 = x * yaw.sin() + y * yaw.cos();
+                    let z1 = z;
+
+                    // Rotate X (pitch)
+                    let x_rot = x1;
+                    let y_rot = y1 * pitch.cos() - z1 * pitch.sin();
+                    let z_rot = y1 * pitch.sin() + z1 * pitch.cos();
+
+                    // Perspective projection
+                    let dist = 15.0;
+                    let scale = 15.0 / (dist - z_rot);
+                    let sx = x_rot * scale * 1.5;
+                    let sy = y_rot * scale;
+
+                    // Color based on whether it is in front or back
+                    let color = if z_rot > 0.0 {
+                        CATPPUCCIN_MOCHA.primary
+                    } else {
+                        CATPPUCCIN_MOCHA.border // faded color for back-side
+                    };
+
+                    if let Some((px, py)) = prev_point {
+                        ctx.draw(&ratatui::widgets::canvas::Line {
+                            x1: px,
+                            y1: py,
+                            x2: sx,
+                            y2: sy,
+                            color,
+                        });
+                    }
+                    prev_point = Some((sx, sy));
+                }
+            }
+
+            // Meridians (longitude lines)
+            for lon_idx in 0..8 {
+                let lon = (lon_idx as f64) * (std::f64::consts::PI / 8.0);
+                let mut prev_point: Option<(f64, f64)> = None;
+                let steps = 24;
+                for step in 0..=steps {
+                    let lat = (step as f64) * (2.0 * std::f64::consts::PI / steps as f64) - std::f64::consts::PI;
+                    let z = lat.sin() * 6.0;
+                    let r_lat = lat.cos() * 6.0;
+
+                    let x = r_lat * lon.cos();
+                    let y = r_lat * lon.sin();
+
+                    // Rotate Z (yaw)
+                    let x1 = x * yaw.cos() - y * yaw.sin();
+                    let y1 = x * yaw.sin() + y * yaw.cos();
+                    let z1 = z;
+
+                    // Rotate X (pitch)
+                    let x_rot = x1;
+                    let y_rot = y1 * pitch.cos() - z1 * pitch.sin();
+                    let z_rot = y1 * pitch.sin() + z1 * pitch.cos();
+
+                    // Perspective projection
+                    let dist = 15.0;
+                    let scale = 15.0 / (dist - z_rot);
+                    let sx = x_rot * scale * 1.5;
+                    let sy = y_rot * scale;
+
+                    let color = if z_rot > 0.0 {
+                        CATPPUCCIN_MOCHA.accent
+                    } else {
+                        CATPPUCCIN_MOCHA.border
+                    };
+
+                    if let Some((px, py)) = prev_point {
+                        ctx.draw(&ratatui::widgets::canvas::Line {
+                            x1: px,
+                            y1: py,
+                            x2: sx,
+                            y2: sy,
+                            color,
+                        });
+                    }
+                    prev_point = Some((sx, sy));
+                }
+            }
+        });
+    f.render_widget(canvas, chunks[3]);
+
+    let lang = &app.tool_config.language;
+    let skip_text = if lang == "zh" {
+        "按任意键跳过启动动画..."
+    } else {
+        "Press any key to skip splash screen..."
+    };
+    let skip_hint = Paragraph::new(Line::from(vec![Span::styled(
+        skip_text,
+        Style::default().fg(CATPPUCCIN_MOCHA.text_disabled),
+    )]))
+    .alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(skip_hint, chunks[4]);
 }

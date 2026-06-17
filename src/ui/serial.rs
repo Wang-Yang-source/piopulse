@@ -6,8 +6,13 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
+    widgets::canvas::Canvas,
     widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table},
 };
+use unicode_width::UnicodeWidthStr;
+
+const SERIAL_OPTION_ROWS: usize = 4;
+const SERIAL_OPTION_COUNT: usize = SERIAL_OPTION_ROWS * 2;
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     // Horizontal Split: Console Terminal (75%) and Control Sidebar (25%)
@@ -107,18 +112,120 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let height = inner_area.height as usize;
-    let logs_to_draw = if wrapped_lines.len() > height {
-        let start = wrapped_lines.len() - height;
-        wrapped_lines[start..].to_vec()
-    } else {
-        wrapped_lines
-    };
+    if active_port == "NONE" {
+        let aspect = (inner_area.width as f64 / inner_area.height as f64) * 0.5;
+        let x_limit = 20.0 * aspect;
 
-    let paragraph = Paragraph::new(logs_to_draw)
-        .block(Block::default())
-        .style(Style::default().bg(mocha::MANTLE));
-    f.render_widget(paragraph, inner_area);
+        let canvas = Canvas::default()
+            .block(Block::default())
+            .x_bounds([-x_limit, x_limit])
+            .y_bounds([-10.0, 10.0])
+            .paint(|ctx| {
+                let t = app.anim_tick as f64;
+
+                // 1. Draw subtle background oscilloscope grid
+                // Vertical grid lines
+                let mut x_grid = -x_limit;
+                while x_grid <= x_limit {
+                    ctx.draw(&ratatui::widgets::canvas::Line {
+                        x1: x_grid,
+                        y1: -10.0,
+                        x2: x_grid,
+                        y2: 10.0,
+                        color: CATPPUCCIN_MOCHA.border,
+                    });
+                    x_grid += 4.0;
+                }
+                // Horizontal grid lines
+                let mut y_grid = -8.0;
+                while y_grid <= 8.0 {
+                    ctx.draw(&ratatui::widgets::canvas::Line {
+                        x1: -x_limit,
+                        y1: y_grid,
+                        x2: x_limit,
+                        y2: y_grid,
+                        color: CATPPUCCIN_MOCHA.border,
+                    });
+                    y_grid += 4.0;
+                }
+
+                // 2. Draw the scrolling ECG pulse waveform
+                let ecg_wave = |phase: f64| -> f64 {
+                    let mut p = (phase % (2.0 * std::f64::consts::PI)) / (2.0 * std::f64::consts::PI);
+                    if p < 0.0 {
+                        p += 1.0;
+                    }
+                    let gauss = |p_val: f64, center: f64, width: f64, amp: f64| -> f64 {
+                        amp * (-((p_val - center) / width).powi(2)).exp()
+                    };
+
+                    let mut y = 0.0;
+                    y += gauss(p, 0.2, 0.03, 1.2);   // P wave (small bump)
+                    y += gauss(p, 0.35, 0.015, -1.0); // Q wave (small dip)
+                    y += gauss(p, 0.4, 0.012, 7.5);   // R wave (high spike)
+                    y += gauss(p, 0.45, 0.018, -2.5); // S wave (deep dip)
+                    y += gauss(p, 0.6, 0.06, 1.8);    // T wave (medium bump)
+                    y
+                };
+
+                let num_segments = 160;
+                let mut prev_point: Option<(f64, f64)> = None;
+                for s in 0..=num_segments {
+                    let alpha = s as f64 / num_segments as f64;
+                    let x = -x_limit + alpha * (2.0 * x_limit);
+                    
+                    // Wave scrolls right-to-left
+                    let phase = (x * 0.25) - (t * 0.15);
+                    let y = ecg_wave(phase);
+
+                    if let Some((px, py)) = prev_point {
+                        ctx.draw(&ratatui::widgets::canvas::Line {
+                            x1: px,
+                            y1: py,
+                            x2: x,
+                            y2: y,
+                            color: CATPPUCCIN_MOCHA.success, // Pulse Green
+                        });
+                    }
+                    prev_point = Some((x, y));
+                }
+
+                // 3. Draw hint message
+                let msg = if lang == "zh" {
+                    " 请在右侧菜单选择串口以开始监视... "
+                } else {
+                    " Select a serial port on the right to start monitoring... "
+                };
+                
+                // Draw a beautiful centered box for the message to overlay the oscilloscope grid cleanly
+                ctx.print(
+                    -x_limit + 1.0,
+                    -9.0,
+                    Span::styled(
+                        msg,
+                        Style::default()
+                            .fg(CATPPUCCIN_MOCHA.text)
+                            .bg(mocha::MANTLE)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                );
+            });
+
+        f.render_widget(canvas, inner_area);
+    } else {
+        let height = inner_area.height as usize;
+        let logs_to_draw = if wrapped_lines.len() > height {
+            let start = wrapped_lines.len() - height;
+            wrapped_lines[start..].to_vec()
+        } else {
+            wrapped_lines
+        };
+
+        let paragraph = Paragraph::new(logs_to_draw)
+            .block(Block::default())
+            .style(Style::default().bg(mocha::MANTLE));
+        f.render_widget(paragraph, inner_area);
+    }
 
     // 2. Input Sending block
     let lang = &app.tool_config.language;
@@ -318,53 +425,69 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         "[ ]"
     };
-    let option_row_style = |left, right| {
-        if app.hover_serial_option == Some(left) || app.hover_serial_option == Some(right) {
+    let option_cell_style = |idx| {
+        if app.hover_serial_option == Some(idx) {
             Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
                 .bg(CATPPUCCIN_MOCHA.selection_bg)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         }
     };
+    let left_option_width = serial_option_left_width(chunks[1]);
 
     let toggles_text = vec![
         compact_option_line(
             monitor_check,
             if lang == "zh" { "监视" } else { "MON" },
             "m",
+            true,
+            option_cell_style(0),
             scroll_check,
             if lang == "zh" { "滚动" } else { "Scroll" },
             "s",
-            option_row_style(0, 1),
+            false,
+            option_cell_style(1),
+            left_option_width,
         ),
         compact_option_line(
             crlf_check,
             if lang == "zh" { "换行" } else { "NL" },
             "n",
+            false,
+            option_cell_style(2),
             rx_hex,
             if lang == "zh" { "RX HEX" } else { "RX HEX" },
             "h",
-            option_row_style(2, 3),
+            false,
+            option_cell_style(3),
+            left_option_width,
         ),
         compact_option_line(
             tx_hex,
             if lang == "zh" { "TX HEX" } else { "TX HEX" },
             "t",
+            false,
+            option_cell_style(4),
             recording,
             if lang == "zh" { "录制" } else { "REC" },
             "r",
-            option_row_style(4, 5),
+            false,
+            option_cell_style(5),
+            left_option_width,
         ),
         compact_option_line(
             replaying,
             if lang == "zh" { "回放" } else { "PLAY" },
             "y",
+            false,
+            option_cell_style(6),
             "[ ]",
             if lang == "zh" { "波特" } else { "Baud" },
             "b",
-            option_row_style(6, 7),
+            false,
+            option_cell_style(7),
+            left_option_width,
         ),
     ];
 
@@ -607,33 +730,95 @@ fn compact_option_line<'a>(
     left_check: &'a str,
     left_label: &'a str,
     left_key: &'a str,
+    left_special: bool,
+    left_style: Style,
     right_check: &'a str,
     right_label: &'a str,
     right_key: &'a str,
-    style: Style,
+    right_special: bool,
+    right_style: Style,
+    left_cell_width: usize,
 ) -> Line<'a> {
-    Line::from(vec![
+    let mut spans = option_cell_spans(left_check, left_label, left_key, left_special, left_style);
+    let left_width = option_cell_display_width(left_check, left_label, left_key);
+    let padding = left_cell_width.saturating_sub(left_width);
+    spans.push(Span::styled(" ".repeat(padding), left_style));
+    spans.extend(option_cell_spans(
+        right_check,
+        right_label,
+        right_key,
+        right_special,
+        right_style,
+    ));
+    Line::from(spans)
+}
+
+fn option_cell_spans<'a>(
+    check: &'a str,
+    label: &'a str,
+    key: &'a str,
+    special: bool,
+    cell_style: Style,
+) -> Vec<Span<'a>> {
+    let accent = if special {
+        CATPPUCCIN_MOCHA.warning
+    } else {
+        CATPPUCCIN_MOCHA.accent
+    };
+    let label_color = if special {
+        CATPPUCCIN_MOCHA.warning
+    } else {
+        CATPPUCCIN_MOCHA.text
+    };
+
+    vec![
+        Span::styled(format!("{} ", check), cell_style.fg(accent)),
+        Span::styled(label, cell_style.fg(label_color)),
         Span::styled(
-            format!("{} ", left_check),
-            Style::default().fg(CATPPUCCIN_MOCHA.accent),
+            format!("[{}]", key),
+            cell_style.fg(CATPPUCCIN_MOCHA.text_muted),
         ),
-        Span::styled(left_label, Style::default().fg(CATPPUCCIN_MOCHA.text)),
-        Span::styled(
-            format!("[{}]", left_key),
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("{} ", right_check),
-            Style::default().fg(CATPPUCCIN_MOCHA.accent),
-        ),
-        Span::styled(right_label, Style::default().fg(CATPPUCCIN_MOCHA.text)),
-        Span::styled(
-            format!("[{}]", right_key),
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-        ),
-    ])
-    .style(style)
+    ]
+}
+
+fn option_cell_display_width(check: &str, label: &str, key: &str) -> usize {
+    UnicodeWidthStr::width(check)
+        + 1
+        + UnicodeWidthStr::width(label)
+        + UnicodeWidthStr::width(format!("[{}]", key).as_str())
+}
+
+fn serial_option_left_width(area: Rect) -> usize {
+    let inner_width = area.width.saturating_sub(2) as usize;
+    inner_width.div_ceil(2)
+}
+
+pub fn serial_option_at(area: Rect, col: u16, row: u16) -> Option<usize> {
+    let inner_x = area.x.saturating_add(1);
+    let inner_y = area.y.saturating_add(1);
+    let inner_width = area.width.saturating_sub(2);
+    let inner_height = area.height.saturating_sub(2);
+
+    if inner_width == 0
+        || inner_height == 0
+        || col < inner_x
+        || col >= inner_x.saturating_add(inner_width)
+        || row < inner_y
+        || row >= inner_y.saturating_add(inner_height)
+    {
+        return None;
+    }
+
+    let row_idx = row.saturating_sub(inner_y) as usize;
+    if row_idx >= SERIAL_OPTION_ROWS {
+        return None;
+    }
+
+    let left_width = serial_option_left_width(area) as u16;
+    let relative_col = col.saturating_sub(inner_x);
+    let col_idx = if relative_col < left_width { 0 } else { 1 };
+    let idx = row_idx.saturating_mul(2).saturating_add(col_idx);
+    (idx < SERIAL_OPTION_COUNT).then_some(idx)
 }
 
 fn draw_analysis_panel(f: &mut Frame, app: &App, area: Rect) {
