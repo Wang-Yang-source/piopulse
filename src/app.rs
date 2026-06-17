@@ -1629,11 +1629,8 @@ impl App {
                 }
 
                 if self.dashboard_widgets.is_empty() {
-                    self.hover_dashboard_empty_action = empty_dashboard_action_at(
-                        self.layout_zones.monitor_panel,
-                        col,
-                        row,
-                    );
+                    self.hover_dashboard_empty_action =
+                        empty_dashboard_action_at(self.layout_zones.monitor_panel, col, row);
                     return;
                 }
 
