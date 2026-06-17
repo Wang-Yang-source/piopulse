@@ -1178,7 +1178,8 @@ impl App {
                 &self.tool_config.language,
             );
             let item_row = row.saturating_sub(area.y + 7) as usize;
-            if item_row < filtered_items.len() {
+            let visible_items = area.height.saturating_sub(8) as usize;
+            if item_row < filtered_items.len().min(visible_items) {
                 self.add_menu_selected = item_row;
                 self.add_widget(filtered_items[item_row].2);
                 self.is_adding_widget = false;
@@ -1407,16 +1408,16 @@ impl App {
         if self.active_tab == ActiveTab::Widgets {
             if self.is_inside_rect(col, row, self.layout_zones.monitor_panel) {
                 if self.dashboard_widgets.is_empty() {
-                    let action =
+                    if let Some(action) =
                         empty_dashboard_action_at(self.layout_zones.monitor_panel, col, row)
-                            .unwrap_or(DashboardEmptyAction::AddCatalog);
-
-                    if let Some(widget) = widget_for_empty_action(action) {
-                        self.add_widget(widget);
-                    } else {
-                        self.is_adding_widget = true;
-                        self.widget_search_input.clear();
-                        self.add_menu_selected = 0;
+                    {
+                        if let Some(widget) = widget_for_empty_action(action) {
+                            self.add_widget(widget);
+                        } else {
+                            self.is_adding_widget = true;
+                            self.widget_search_input.clear();
+                            self.add_menu_selected = 0;
+                        }
                     }
                     return true;
                 }
@@ -1571,7 +1572,8 @@ impl App {
                     &self.tool_config.language,
                 );
                 let item_row = row.saturating_sub(area.y + 7) as usize;
-                if item_row < filtered_items.len() {
+                let visible_items = area.height.saturating_sub(8) as usize;
+                if item_row < filtered_items.len().min(visible_items) {
                     self.add_menu_selected = item_row;
                 }
             }
@@ -1627,14 +1629,11 @@ impl App {
                 }
 
                 if self.dashboard_widgets.is_empty() {
-                    self.hover_dashboard_empty_action = match empty_dashboard_action_at(
+                    self.hover_dashboard_empty_action = empty_dashboard_action_at(
                         self.layout_zones.monitor_panel,
                         col,
                         row,
-                    ) {
-                        Some(action) => Some(action),
-                        None => Some(DashboardEmptyAction::AddCatalog),
-                    };
+                    );
                     return;
                 }
 
@@ -1757,6 +1756,7 @@ fn empty_dashboard_action_at(
     row: u16,
 ) -> Option<DashboardEmptyAction> {
     let relative_row = row.saturating_sub(monitor_panel.y + 1);
+    let compact = monitor_panel.height < 16 || monitor_panel.width < 82;
     match relative_row {
         3 => {
             let rel_x = col.saturating_sub(monitor_panel.x + 3);
@@ -1769,6 +1769,7 @@ fn empty_dashboard_action_at(
                 _ => None,
             }
         }
+        _ if compact => None,
         7 => Some(DashboardEmptyAction::Button),
         8 => Some(DashboardEmptyAction::Slider),
         9 => Some(DashboardEmptyAction::Dashboard),

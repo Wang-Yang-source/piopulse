@@ -88,7 +88,9 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Centered popup modal to add widget
     if app.is_adding_widget {
-        let modal_area = center_rect(65, 20, area);
+        let modal_height = area.height.saturating_sub(2).clamp(8, 20);
+        let modal_width_pct = if area.width < 78 { 94 } else { 65 };
+        let modal_area = center_rect(modal_width_pct, modal_height, area);
         app.layout_zones.widget_add_modal = modal_area;
         draw_add_widget_modal(f, app, modal_area);
     }
@@ -120,7 +122,8 @@ fn draw_welcome_screen(f: &mut Frame, app: &App, area: Rect) {
         " Dashboard Workspace - No Preset Modules "
     };
 
-    let lines = vec![
+    let compact = area.height < 16 || area.width < 82;
+    let mut lines = vec![
         Line::from(""),
         Line::from(vec![
             Span::styled(
@@ -201,76 +204,90 @@ fn draw_welcome_screen(f: &mut Frame, app: &App, area: Rect) {
                 app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Image),
             ),
         ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            if lang == "zh" {
-                "  推荐：点击下面任一行直接添加，也可以点击上方添加模块打开完整目录。"
-            } else {
-                "  Suggested: click a row to add it, or click Add Module for the full catalog."
-            },
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-        )),
-        Line::from(""),
-        suggestion_line(
-            "Button",
-            if lang == "zh" {
-                "串口 START / STOP / RESET / PING 控制面板"
-            } else {
-                "Serial START / STOP / RESET / PING command panel"
-            },
-            CATPPUCCIN_MOCHA.primary,
-            app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Button),
-        ),
-        suggestion_line(
-            "Slider",
-            if lang == "zh" {
-                "可点击调节 Kp / Ki / Kd 参数"
-            } else {
-                "Clickable Kp / Ki / Kd tuning controls"
-            },
-            CATPPUCCIN_MOCHA.accent,
-            app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Slider),
-        ),
-        suggestion_line(
-            "Dashboard",
-            if lang == "zh" {
-                "电机状态、目标速度和控制输出摘要"
-            } else {
-                "Motor state, target speed, and control output summary"
-            },
-            CATPPUCCIN_MOCHA.info,
-            app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Dashboard),
-        ),
-        suggestion_line(
-            "Image",
-            if lang == "zh" {
-                "查看 VOFA 图像或 ROI 数据"
-            } else {
-                "View VOFA image or ROI payloads"
-            },
-            CATPPUCCIN_MOCHA.warning,
-            app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Image),
-        ),
-        suggestion_line(
-            "Cube",
-            if lang == "zh" {
-                "需要 IMU 姿态时再手动添加"
-            } else {
-                "Add manually when IMU orientation is needed"
-            },
-            CATPPUCCIN_MOCHA.success,
-            app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Cube),
-        ),
-        Line::from(""),
-        Line::from(Span::styled(
-            if lang == "zh" {
-                "  鼠标：点击推荐模块添加；键盘：A 打开目录，D 删除模块，方向键切换模块。"
-            } else {
-                "  Mouse: click suggestions to add; Keyboard: A catalog, D delete, arrows switch panes."
-            },
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-        )),
     ];
+
+    if !compact {
+        lines.extend([
+            Line::from(""),
+            Line::from(Span::styled(
+                if lang == "zh" {
+                    "  推荐：点击下面任一行直接添加，也可以点击上方添加模块打开完整目录。"
+                } else {
+                    "  Suggested: click a row to add it, or click Add Module for the full catalog."
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            )),
+            Line::from(""),
+            suggestion_line(
+                "Button",
+                if lang == "zh" {
+                    "串口 START / STOP / RESET / PING 控制面板"
+                } else {
+                    "Serial START / STOP / RESET / PING command panel"
+                },
+                CATPPUCCIN_MOCHA.primary,
+                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Button),
+            ),
+            suggestion_line(
+                "Slider",
+                if lang == "zh" {
+                    "可点击调节 Kp / Ki / Kd 参数"
+                } else {
+                    "Clickable Kp / Ki / Kd tuning controls"
+                },
+                CATPPUCCIN_MOCHA.accent,
+                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Slider),
+            ),
+            suggestion_line(
+                "Dashboard",
+                if lang == "zh" {
+                    "电机状态、目标速度和控制输出摘要"
+                } else {
+                    "Motor state, target speed, and control output summary"
+                },
+                CATPPUCCIN_MOCHA.info,
+                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Dashboard),
+            ),
+            suggestion_line(
+                "Image",
+                if lang == "zh" {
+                    "查看 VOFA 图像或 ROI 数据"
+                } else {
+                    "View VOFA image or ROI payloads"
+                },
+                CATPPUCCIN_MOCHA.warning,
+                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Image),
+            ),
+            suggestion_line(
+                "Cube",
+                if lang == "zh" {
+                    "需要 IMU 姿态时再手动添加"
+                } else {
+                    "Add manually when IMU orientation is needed"
+                },
+                CATPPUCCIN_MOCHA.success,
+                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Cube),
+            ),
+            Line::from(""),
+            Line::from(Span::styled(
+                if lang == "zh" {
+                    "  鼠标：点击推荐模块添加；键盘：A 打开目录，D 删除模块，方向键切换模块。"
+                } else {
+                    "  Mouse: click suggestions to add; Keyboard: A catalog, D delete, arrows switch panes."
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            )),
+        ]);
+    } else {
+        lines.push(Line::from(Span::styled(
+            if lang == "zh" {
+                "  小屏模式：点击上方按钮，或按 A 打开目录。"
+            } else {
+                "  Compact: click a button above, or press A for catalog."
+            },
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+        )));
+    }
 
     let p = Paragraph::new(lines)
         .block(
@@ -331,6 +348,7 @@ fn suggestion_line<'a>(
 fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
     let lang = &app.tool_config.language;
     let filtered_items = get_filtered_catalog_items(&app.widget_search_input, lang);
+    let max_items = area.height.saturating_sub(8) as usize;
 
     let mut lines = Vec::new();
     lines.push(Line::from(Span::styled(
@@ -360,7 +378,7 @@ fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
     )));
     lines.push(Line::from(""));
 
-    for (idx, (name, desc_key, _)) in filtered_items.iter().enumerate() {
+    for (idx, (name, desc_key, _)) in filtered_items.iter().take(max_items).enumerate() {
         let is_selected = app.add_menu_selected == idx;
         let prefix = if is_selected {
             Span::styled(
@@ -384,6 +402,12 @@ fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
             prefix,
             Span::styled(format!("{:<18} : {}", name, translated_desc), style),
         ]));
+    }
+    if filtered_items.len() > max_items {
+        lines.push(Line::from(Span::styled(
+            format!("   ... {} more", filtered_items.len() - max_items),
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+        )));
     }
 
     lines.push(Line::from(""));
