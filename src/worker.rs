@@ -668,24 +668,136 @@ fn describe_security_policy(config: &ProjectConfig) -> String {
     }
 }
 
-pub struct ProbeRsBackend;
 
-impl FlasherBackend for ProbeRsBackend {
+
+fn parse_progress(line: &str) -> Option<u8> {
+    if let Some(idx) = line.find('%') {
+        let before = &line[..idx];
+        let number_chars: String = before.chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit() || *c == ' ' || *c == '(')
+            .collect();
+        let number_str: String = number_chars.chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if let Ok(val) = number_str.parse::<u8>() {
+            if val <= 100 {
+                return Some(val);
+            }
+        }
+    }
+    None
+}
+
+pub struct PlatformIoUploadBackend;
+
+impl FlasherBackend for PlatformIoUploadBackend {
     fn run_flash(
         &self,
         selector: &DeviceSelector,
-        _config: &ProjectConfig,
+        config: &ProjectConfig,
         tx: &Sender<WorkerMessage>,
     ) -> Result<Option<String>, String> {
-        let label = match selector {
+        use std::process::{Command, Stdio};
+        use std::io::{BufRead, BufReader};
+
+        let port_name = match selector {
             DeviceSelector::SerialPort(p) => p.clone(),
-            DeviceSelector::DebugProbe(s) => s.clone(),
+            _ => return Err("PlatformIO upload requires a serial port".to_string()),
         };
+
+        let app_path = std::path::Path::new(&config.app_path);
+        let env_name = app_path.parent()
+            .and_then(|p| p.file_name())
+            .and_then(|f| f.to_str())
+            .ok_or_else(|| "Could not determine PlatformIO environment name from firmware path".to_string())?;
+
+        let project_dir = app_path.parent() // <env_name>
+            .and_then(|p| p.parent())       // build
+            .and_then(|p| p.parent())       // .pio
+            .and_then(|p| p.parent())       // project root
+            .ok_or_else(|| "Could not determine PlatformIO project root from firmware path".to_string())?;
+
         let _ = tx.blocking_send(WorkerMessage::Log {
-            port: label.clone(),
-            message: "probe-rs backend is not enabled in this build.".to_string(),
+            port: port_name.clone(),
+            message: format!("Launching: pio run -t upload --upload-port {} -e {}", port_name, env_name),
         });
-        Err("probe-rs backend not enabled".to_string())
+
+        let _ = tx.blocking_send(WorkerMessage::StatusUpdate {
+            port: port_name.clone(),
+            status: "Uploading".to_string(),
+            progress: 0,
+            speed: "N/A".to_string(),
+        });
+
+        let mut child = Command::new("pio")
+            .args(&["run", "-t", "upload", "--upload-port", &port_name, "-e", env_name])
+            .current_dir(project_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn PlatformIO process: {}", e))?;
+
+        let stdout = child.stdout.take().ok_or_else(|| "Failed to capture stdout".to_string())?;
+        let stderr = child.stderr.take().ok_or_else(|| "Failed to capture stderr".to_string())?;
+
+        let tx_clone = tx.clone();
+        let port_clone = port_name.clone();
+
+        let log_thread = std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                if let Ok(line_content) = line {
+                    let _ = tx_clone.blocking_send(WorkerMessage::Log {
+                        port: port_clone.clone(),
+                        message: line_content.clone(),
+                    });
+
+                    if let Some(pct) = parse_progress(&line_content) {
+                        let _ = tx_clone.blocking_send(WorkerMessage::StatusUpdate {
+                            port: port_clone.clone(),
+                            status: "Uploading".to_string(),
+                            progress: pct,
+                            speed: "N/A".to_string(),
+                        });
+                    }
+                }
+            }
+        });
+
+        let tx_err = tx.clone();
+        let port_err = port_name.clone();
+        let err_thread = std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(line_content) = line {
+                    let _ = tx_err.blocking_send(WorkerMessage::Log {
+                        port: port_err.clone(),
+                        message: line_content,
+                    });
+                }
+            }
+        });
+
+        let status = child.wait().map_err(|e| format!("Failed to wait for PlatformIO process: {}", e))?;
+
+        let _ = log_thread.join();
+        let _ = err_thread.join();
+
+        if status.success() {
+            let _ = tx.blocking_send(WorkerMessage::StatusUpdate {
+                port: port_name.clone(),
+                status: "Success".to_string(),
+                progress: 100,
+                speed: "N/A".to_string(),
+            });
+            Ok(None)
+        } else {
+            Err("PlatformIO upload command failed. Check logs for details.".to_string())
+        }
     }
 }
 
@@ -699,8 +811,7 @@ fn do_native_flash(
     let backend: Box<dyn FlasherBackend> =
         match config.chip_type.to_lowercase().replace("-", "").as_str() {
             c if c.starts_with("esp32") => Box::new(Esp32SerialBackend),
-            "stm32" | "rp2040" => Box::new(ProbeRsBackend),
-            _ => Box::new(Esp32SerialBackend),
+            _ => Box::new(PlatformIoUploadBackend),
         };
 
     let mac = backend.run_flash(&selector, &config, &tx)?;
