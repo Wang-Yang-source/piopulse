@@ -312,19 +312,8 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
 
         let (status_text, status_style) = if channel.finished {
             if channel.success {
-                let text = if let Some(ticks) = app.flash_success_ticks_remaining {
-                    let cycle = match (ticks / 3) % 4 {
-                        0 => "✨ SUCCESS",
-                        1 => "✦ SUCCESS",
-                        2 => "✧ SUCCESS",
-                        _ => "✔ SUCCESS",
-                    };
-                    cycle.to_string()
-                } else {
-                    tr("flash_status_success", lang).to_string()
-                };
                 (
-                    text,
+                    tr("flash_status_success", lang).to_string(),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.success)
                         .add_modifier(Modifier::BOLD),
@@ -369,17 +358,7 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
             )
         };
 
-        let progress_text = if channel.finished && channel.success && app.flash_success_ticks_remaining.is_some() {
-            let ticks = app.flash_success_ticks_remaining.unwrap_or(0);
-            let pos = (30 - ticks) / 3;
-            let mut bar = vec!["█"; 10];
-            if pos < 10 {
-                bar[pos] = "✨";
-            }
-            format!("[{}] 100%", bar.join(""))
-        } else {
-            make_progress_bar(channel.progress, 10)
-        };
+        let progress_text = make_progress_bar(channel.progress, 10);
         let progress_style = if channel.finished && channel.success {
             Style::default().fg(CATPPUCCIN_MOCHA.success)
         } else if channel.finished && !channel.success {
