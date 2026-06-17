@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::app::{App, Channel};
 use crate::ui::theme::{CATPPUCCIN_MOCHA, mocha};
 use crate::ui::tr;
 use ratatui::{
@@ -305,14 +305,26 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
             .chip
             .as_deref()
             .unwrap_or_else(|| tr("flash_detecting", lang));
+        let (usable_text, usable_style) = flash_usable_status(channel, lang);
         let mac_text = channel.mac.as_deref().unwrap_or("XX:XX:XX:XX:XX:XX");
         let sn_text = channel.serial_number.as_deref().unwrap_or("-");
         let trace_text = channel.trace_id.as_deref().unwrap_or("-");
 
         let (status_text, status_style) = if channel.finished {
             if channel.success {
+                let text = if let Some(ticks) = app.flash_success_ticks_remaining {
+                    let cycle = match (ticks / 3) % 4 {
+                        0 => "✨ SUCCESS",
+                        1 => "✦ SUCCESS",
+                        2 => "✧ SUCCESS",
+                        _ => "✔ SUCCESS",
+                    };
+                    cycle.to_string()
+                } else {
+                    tr("flash_status_success", lang).to_string()
+                };
                 (
-                    tr("flash_status_success", lang).to_string(),
+                    text,
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.success)
                         .add_modifier(Modifier::BOLD),
@@ -357,7 +369,17 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
             )
         };
 
-        let progress_text = make_progress_bar(channel.progress, 10);
+        let progress_text = if channel.finished && channel.success && app.flash_success_ticks_remaining.is_some() {
+            let ticks = app.flash_success_ticks_remaining.unwrap_or(0);
+            let pos = (30 - ticks) / 3;
+            let mut bar = vec!["█"; 10];
+            if pos < 10 {
+                bar[pos] = "✨";
+            }
+            format!("[{}] 100%", bar.join(""))
+        } else {
+            make_progress_bar(channel.progress, 10)
+        };
         let progress_style = if channel.finished && channel.success {
             Style::default().fg(CATPPUCCIN_MOCHA.success)
         } else if channel.finished && !channel.success {
@@ -381,6 +403,7 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
         let cells = if compact {
             vec![
                 Cell::from(Span::styled(port_text, port_style)),
+                Cell::from(Span::styled(usable_text, usable_style)),
                 Cell::from(Span::raw(chip_text)),
                 Cell::from(Span::styled(status_text, status_style)),
                 Cell::from(Span::styled(progress_text, progress_style)),
@@ -392,6 +415,7 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             vec![
                 Cell::from(Span::styled(port_text, port_style)),
+                Cell::from(Span::styled(usable_text, usable_style)),
                 Cell::from(Span::raw(chip_text)),
                 Cell::from(Span::raw(sn_text)),
                 Cell::from(Span::raw(mac_text)),
@@ -411,12 +435,13 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let headers = if compact && lang == "zh" {
-        vec!["端口", "芯片", "流程", "进度", "QA"]
+        vec!["端口", "可用", "芯片", "流程", "进度", "QA"]
     } else if compact {
-        vec!["Port", "Chip", "Flow", "Progress", "QA"]
+        vec!["Port", "Use", "Chip", "Flow", "Progress", "QA"]
     } else if lang == "zh" {
         vec![
             "端口",
+            "可用性",
             "目标芯片",
             "SN",
             "MAC 地址",
@@ -430,6 +455,7 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         vec![
             "Port",
+            "Usable",
             "Target Chip",
             "SN",
             "MAC Address",
@@ -446,6 +472,7 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
         vec![
             Constraint::Length(14),
             Constraint::Length(10),
+            Constraint::Length(10),
             Constraint::Min(16),
             Constraint::Length(16),
             Constraint::Length(10),
@@ -453,6 +480,7 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         vec![
             Constraint::Length(14),
+            Constraint::Length(12),
             Constraint::Length(10),
             Constraint::Length(24),
             Constraint::Length(17),
@@ -503,12 +531,14 @@ fn make_progress_bar(pct: u8, width: usize) -> String {
 
 pub fn flash_action_label(idx: usize, lang: &str) -> &'static str {
     match (idx, lang == "zh") {
-        (0, true) => "[开始]",
-        (0, false) => "[Start]",
-        (1, true) => "[扫描]",
-        (1, false) => "[Scan]",
-        (2, true) => "[配置]",
-        (2, false) => "[Config]",
+        (0, true) => "[烧录选中]",
+        (0, false) => "[Flash Sel]",
+        (1, true) => "[批量]",
+        (1, false) => "[Batch]",
+        (2, true) => "[扫描]",
+        (2, false) => "[Scan]",
+        (3, true) => "[配置]",
+        (3, false) => "[Config]",
         _ => "",
     }
 }
@@ -546,6 +576,82 @@ fn enabled_label(enabled: bool, lang: &str) -> &'static str {
     } else {
         "OFF"
     }
+}
+
+fn flash_usable_status(channel: &Channel, lang: &str) -> (&'static str, Style) {
+    let description = format!(
+        "{} {}",
+        channel.usb_product.as_deref().unwrap_or_default(),
+        channel.usb_manufacturer.as_deref().unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+
+    if channel.vid == Some(0x303a) || description.contains("espressif") {
+        return (
+            if lang == "zh" {
+                "ESP 原生"
+            } else {
+                "ESP USB"
+            },
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.success)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+
+    let known_usb_uart_vid = matches!(
+        channel.vid,
+        Some(0x10c4 | 0x1a86 | 0x0403 | 0x067b | 0x1b4f | 0x2341)
+    );
+    let known_usb_uart_text = [
+        "cp210",
+        "ch340",
+        "ch341",
+        "wch",
+        "ftdi",
+        "prolific",
+        "usb serial",
+        "usb-serial",
+        "uart",
+    ]
+    .iter()
+    .any(|needle| description.contains(needle));
+
+    if known_usb_uart_vid || known_usb_uart_text {
+        return (
+            if lang == "zh" { "USB-UART" } else { "USB-UART" },
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.success)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+
+    let likely_not_target = [
+        "bluetooth",
+        "pico",
+        "cmsis",
+        "daplink",
+        "stlink",
+        "debug probe",
+    ]
+    .iter()
+    .any(|needle| description.contains(needle));
+
+    if likely_not_target {
+        return (
+            if lang == "zh" {
+                "可能不可用"
+            } else {
+                "Maybe no"
+            },
+            Style::default().fg(CATPPUCCIN_MOCHA.danger),
+        );
+    }
+
+    (
+        if lang == "zh" { "未知" } else { "Unknown" },
+        Style::default().fg(CATPPUCCIN_MOCHA.warning),
+    )
 }
 
 fn format_bytes(bytes: usize) -> String {
