@@ -39,14 +39,62 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         (tr("config_flash_mode", lang), cfg.flash_mode.clone()),
         (tr("config_flash_freq", lang), cfg.flash_freq.clone()),
         (tr("config_flash_size", lang), cfg.flash_size.clone()),
-        (tr("config_bootloader_offset", lang), cfg.bootloader_offset.clone()),
-        (tr("config_bootloader_path", lang), cfg.bootloader_path.clone()),
-        (tr("config_partitions_offset", lang), cfg.partitions_offset.clone()),
-        (tr("config_partitions_path", lang), cfg.partitions_path.clone()),
-        (tr("config_otadata_offset", lang), cfg.otadata_offset.clone()),
+        (
+            tr("config_bootloader_offset", lang),
+            cfg.bootloader_offset.clone(),
+        ),
+        (
+            tr("config_bootloader_path", lang),
+            cfg.bootloader_path.clone(),
+        ),
+        (
+            tr("config_partitions_offset", lang),
+            cfg.partitions_offset.clone(),
+        ),
+        (
+            tr("config_partitions_path", lang),
+            cfg.partitions_path.clone(),
+        ),
+        (
+            tr("config_otadata_offset", lang),
+            cfg.otadata_offset.clone(),
+        ),
         (tr("config_otadata_path", lang), cfg.otadata_path.clone()),
         (tr("config_app_offset", lang), cfg.app_offset.clone()),
         (tr("config_app_path", lang), cfg.app_path.clone()),
+        (tr("config_nvs_offset", lang), cfg.nvs_offset.clone()),
+        (tr("config_verify_method", lang), cfg.verify_method.clone()),
+        (tr("config_blank_check", lang), cfg.blank_check.to_string()),
+        (tr("config_erase_mode", lang), cfg.erase_mode.clone()),
+        (
+            tr("config_incremental_programming", lang),
+            cfg.incremental_programming.to_string(),
+        ),
+        (tr("config_secure_boot", lang), cfg.secure_boot.to_string()),
+        (
+            tr("config_flash_encryption", lang),
+            cfg.flash_encryption.to_string(),
+        ),
+        (
+            tr("config_lock_after_flash", lang),
+            cfg.lock_after_flash.to_string(),
+        ),
+        (tr("config_operator_role", lang), cfg.operator_role.clone()),
+        (
+            tr("config_firmware_version", lang),
+            cfg.firmware_version.clone(),
+        ),
+        (tr("config_sn_prefix", lang), cfg.sn_prefix.clone()),
+        (tr("config_lot_code", lang), cfg.lot_code.clone()),
+        (tr("config_mes_endpoint", lang), cfg.mes_endpoint.clone()),
+        (
+            tr("config_label_template", lang),
+            cfg.label_template.clone(),
+        ),
+        (
+            tr("config_qa_test_script", lang),
+            cfg.qa_test_script.clone(),
+        ),
     ];
 
     let mut rows = Vec::new();
@@ -105,7 +153,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, chunks[0]);
 
     // Inspector and Guides
-    let (selected_label, selected_val) = &fields[app.selected_config_field];
+    let selected_idx = app
+        .selected_config_field
+        .min(fields.len().saturating_sub(1));
+    let (selected_label, selected_val) = &fields[selected_idx];
     let display_val = if app.is_editing_config {
         app.edit_buffer.clone()
     } else {
@@ -198,18 +249,36 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // Line 5: Help Guide
     let guide_spans = if !app.admin_mode {
         vec![
-            Span::styled(tr("config_guide", lang), Style::default().fg(CATPPUCCIN_MOCHA.primary)),
-            Span::styled(tr("config_guide_locked", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(
+                tr("config_guide", lang),
+                Style::default().fg(CATPPUCCIN_MOCHA.primary),
+            ),
+            Span::styled(
+                tr("config_guide_locked", lang),
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
         ]
     } else if app.is_editing_config {
         vec![
-            Span::styled(tr("config_guide", lang), Style::default().fg(CATPPUCCIN_MOCHA.accent)),
-            Span::styled(tr("config_guide_editing", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(
+                tr("config_guide", lang),
+                Style::default().fg(CATPPUCCIN_MOCHA.accent),
+            ),
+            Span::styled(
+                tr("config_guide_editing", lang),
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
         ]
     } else {
         vec![
-            Span::styled(tr("config_guide", lang), Style::default().fg(CATPPUCCIN_MOCHA.success)),
-            Span::styled(tr("config_guide_unlocked", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(
+                tr("config_guide", lang),
+                Style::default().fg(CATPPUCCIN_MOCHA.success),
+            ),
+            Span::styled(
+                tr("config_guide_unlocked", lang),
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
         ]
     };
     inspector_lines.push(Line::from(guide_spans));

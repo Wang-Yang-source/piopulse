@@ -18,7 +18,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Summary Bar
+            Constraint::Length(7), // Production Summary
             Constraint::Min(5),    // Table
         ])
         .split(area);
@@ -92,6 +92,36 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(CATPPUCCIN_MOCHA.text),
             ),
         ]),
+        Line::from(vec![
+            Span::styled(
+                if lang == "zh" {
+                    "   校验/空片: "
+                } else {
+                    "   Verify/Blank: "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(
+                format!(
+                    "[{} / {}]",
+                    app.config.verify_method,
+                    enabled_label(app.config.blank_check, lang)
+                ),
+                Style::default().fg(CATPPUCCIN_MOCHA.success),
+            ),
+            Span::styled(
+                if lang == "zh" {
+                    "   SN/批次: "
+                } else {
+                    "   SN/Lot: "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(
+                format!("[{} / {}]", app.config.sn_prefix, app.config.lot_code),
+                Style::default().fg(CATPPUCCIN_MOCHA.primary),
+            ),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             tr("flash_connect_usb", lang),
@@ -138,43 +168,113 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
         .filter(|c| c.finished && !c.success)
         .count();
 
-    let summary_line = Line::from(vec![
-        Span::raw(tr("flash_devices_count", lang)),
-        Span::styled(
-            total.to_string(),
-            Style::default()
-                .fg(mocha::BLUE)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(tr("flash_idle_count", lang)),
-        Span::styled(
-            idle.to_string(),
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text_muted)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(tr("flash_flashing_count", lang)),
-        Span::styled(
-            flashing.to_string(),
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.warning)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(tr("flash_success_count", lang)),
-        Span::styled(
-            passed.to_string(),
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.success)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(tr("flash_failed_count", lang)),
-        Span::styled(
-            failed.to_string(),
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.danger)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
+    let summary_lines = vec![
+        Line::from(vec![
+            Span::raw(tr("flash_devices_count", lang)),
+            Span::styled(
+                total.to_string(),
+                Style::default()
+                    .fg(mocha::BLUE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(tr("flash_idle_count", lang)),
+            Span::styled(
+                idle.to_string(),
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text_muted)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(tr("flash_flashing_count", lang)),
+            Span::styled(
+                flashing.to_string(),
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(tr("flash_success_count", lang)),
+            Span::styled(
+                passed.to_string(),
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(tr("flash_failed_count", lang)),
+            Span::styled(
+                failed.to_string(),
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.danger)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                if lang == "zh" {
+                    "  产线策略: "
+                } else {
+                    "  Production: "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(
+                format!(
+                    "verify={}  blank={}  erase={}  incremental={}",
+                    app.config.verify_method,
+                    enabled_label(app.config.blank_check, lang),
+                    app.config.erase_mode,
+                    enabled_label(app.config.incremental_programming, lang)
+                ),
+                Style::default().fg(CATPPUCCIN_MOCHA.text),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                if lang == "zh" {
+                    "  安全/追溯: "
+                } else {
+                    "  Security/Trace: "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(
+                format!(
+                    "secure_boot={}  flash_enc={}  lock={}  fw={}  lot={}",
+                    enabled_label(app.config.secure_boot, lang),
+                    enabled_label(app.config.flash_encryption, lang),
+                    enabled_label(app.config.lock_after_flash, lang),
+                    app.config.firmware_version,
+                    app.config.lot_code
+                ),
+                Style::default().fg(CATPPUCCIN_MOCHA.primary),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                if lang == "zh" {
+                    "  集成: "
+                } else {
+                    "  Integration: "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(
+                format!(
+                    "MES={}  label={}  QA={}",
+                    if app.config.mes_endpoint.trim().is_empty() {
+                        if lang == "zh" {
+                            "未配置"
+                        } else {
+                            "not configured"
+                        }
+                    } else {
+                        app.config.mes_endpoint.as_str()
+                    },
+                    app.config.label_template,
+                    app.config.qa_test_script
+                ),
+                Style::default().fg(CATPPUCCIN_MOCHA.text),
+            ),
+        ]),
+    ];
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -187,7 +287,7 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
 
-    let paragraph = Paragraph::new(summary_line)
+    let paragraph = Paragraph::new(summary_lines)
         .block(block)
         .alignment(ratatui::layout::Alignment::Left)
         .style(Style::default().bg(mocha::MANTLE));
@@ -211,8 +311,13 @@ fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(CATPPUCCIN_MOCHA.text)
         };
 
-        let chip_text = channel.chip.as_deref().unwrap_or_else(|| tr("flash_detecting", lang));
+        let chip_text = channel
+            .chip
+            .as_deref()
+            .unwrap_or_else(|| tr("flash_detecting", lang));
         let mac_text = channel.mac.as_deref().unwrap_or("XX:XX:XX:XX:XX:XX");
+        let sn_text = channel.serial_number.as_deref().unwrap_or("-");
+        let trace_text = channel.trace_id.as_deref().unwrap_or("-");
 
         let (status_text, status_style) = if channel.finished {
             if channel.success {
@@ -223,9 +328,10 @@ fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
-                let err_msg = channel.error.as_deref().unwrap_or_else(|| {
-                    if lang == "zh" { "未知" } else { "Unknown" }
-                });
+                let err_msg = channel
+                    .error
+                    .as_deref()
+                    .unwrap_or_else(|| if lang == "zh" { "未知" } else { "Unknown" });
                 (
                     tr("flash_status_failed", lang).replace("{}", err_msg),
                     Style::default()
@@ -245,6 +351,9 @@ fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
                     "Erasing" => "擦除中",
                     "Verifying" => "校验中",
                     "Connecting" => "连接中",
+                    "Blank Check" => "空片检查",
+                    "Erase Plan" => "擦除规划",
+                    "Functional Test" => "功能测试",
                     s => s,
                 }
             } else {
@@ -269,12 +378,6 @@ fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(CATPPUCCIN_MOCHA.warning)
         };
 
-        let speed_text = if channel.status == "Idle" {
-            "---".to_string()
-        } else {
-            channel.speed.clone()
-        };
-
         let row_style = if is_selected {
             Style::default().bg(mocha::SURFACE0)
         } else if idx % 2 == 0 {
@@ -287,42 +390,67 @@ fn draw_device_table(f: &mut Frame, app: &App, area: Rect) {
             Row::new(vec![
                 Cell::from(Span::styled(port_text, port_style)),
                 Cell::from(Span::raw(chip_text)),
+                Cell::from(Span::raw(sn_text)),
                 Cell::from(Span::raw(mac_text)),
                 Cell::from(Span::styled(status_text, status_style)),
                 Cell::from(Span::styled(progress_text, progress_style)),
-                Cell::from(Span::raw(speed_text)),
+                Cell::from(Span::raw(format_bytes(channel.bytes_written))),
+                Cell::from(Span::styled(
+                    channel.qa_result.clone(),
+                    qa_style(&channel.qa_result),
+                )),
+                Cell::from(Span::raw(channel.security_state.clone())),
+                Cell::from(Span::raw(trace_text)),
             ])
             .style(row_style),
         );
     }
 
     let headers = if lang == "zh" {
-        vec!["端口", "目标芯片", "MAC 地址", "状态", "进度", "速度"]
+        vec![
+            "端口",
+            "目标芯片",
+            "SN",
+            "MAC 地址",
+            "流程",
+            "进度",
+            "写入",
+            "QA",
+            "安全",
+            "追溯",
+        ]
     } else {
         vec![
             "Port",
             "Target Chip",
+            "SN",
             "MAC Address",
-            "Status",
+            "Flow",
             "Progress",
-            "Speed",
+            "Bytes",
+            "QA",
+            "Security",
+            "Trace",
         ]
     };
 
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(20),
-            Constraint::Percentage(15),
-            Constraint::Percentage(20),
-            Constraint::Percentage(25),
-            Constraint::Percentage(12),
-            Constraint::Percentage(8),
+            Constraint::Length(14),
+            Constraint::Length(10),
+            Constraint::Length(24),
+            Constraint::Length(17),
+            Constraint::Length(20),
+            Constraint::Length(16),
+            Constraint::Length(9),
+            Constraint::Length(14),
+            Constraint::Length(18),
+            Constraint::Min(16),
         ],
     )
     .header(
-        Row::new(headers.into_iter().map(Cell::from).collect::<Vec<_>>())
-        .style(
+        Row::new(headers.into_iter().map(Cell::from).collect::<Vec<_>>()).style(
             Style::default()
                 .fg(mocha::SUBTEXT1)
                 .bg(mocha::SURFACE0)
@@ -349,4 +477,41 @@ fn make_progress_bar(pct: u8, width: usize) -> String {
     let filled = (pct as usize * width) / 100;
     let empty = width - filled;
     format!("[{}{}] {:>3}%", "█".repeat(filled), "░".repeat(empty), pct)
+}
+
+fn enabled_label(enabled: bool, lang: &str) -> &'static str {
+    if enabled {
+        if lang == "zh" { "启用" } else { "ON" }
+    } else if lang == "zh" {
+        "关闭"
+    } else {
+        "OFF"
+    }
+}
+
+fn format_bytes(bytes: usize) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1}MB", bytes as f64 / 1024.0 / 1024.0)
+    } else if bytes >= 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else if bytes == 0 {
+        "-".to_string()
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
+fn qa_style(value: &str) -> Style {
+    let upper = value.to_ascii_uppercase();
+    if upper.starts_with("PASS") {
+        Style::default()
+            .fg(CATPPUCCIN_MOCHA.success)
+            .add_modifier(Modifier::BOLD)
+    } else if upper.starts_with("FAIL") {
+        Style::default()
+            .fg(CATPPUCCIN_MOCHA.danger)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(CATPPUCCIN_MOCHA.text_muted)
+    }
 }

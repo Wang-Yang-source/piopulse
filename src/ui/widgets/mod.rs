@@ -1,7 +1,9 @@
 pub mod cube;
 pub mod image;
 
-use crate::app::{App, WidgetType};
+use crate::app::{
+    App, DashboardEmptyAction, PARAM_SLIDER_LAST_OFFSET, PARAM_SLIDER_TRACK_WIDTH, WidgetType,
+};
 use crate::ui::theme::{CATPPUCCIN_MOCHA, mocha};
 use ratatui::{
     Frame,
@@ -32,13 +34,18 @@ pub fn get_catalog_items() -> Vec<(&'static str, &'static str, WidgetType)> {
     ]
 }
 
-pub fn get_filtered_catalog_items(search: &str, _lang: &str) -> Vec<(&'static str, &'static str, WidgetType)> {
+pub fn get_filtered_catalog_items(
+    search: &str,
+    _lang: &str,
+) -> Vec<(&'static str, &'static str, WidgetType)> {
     let search = search.to_lowercase();
     let mut items: Vec<_> = get_catalog_items()
         .into_iter()
         .filter(|(name, desc_key, _)| {
             name.contains(&search)
-                || crate::ui::tr(desc_key, "en").to_lowercase().contains(&search)
+                || crate::ui::tr(desc_key, "en")
+                    .to_lowercase()
+                    .contains(&search)
                 || crate::ui::tr(desc_key, "zh").contains(&search)
         })
         .collect();
@@ -47,7 +54,7 @@ pub fn get_filtered_catalog_items(search: &str, _lang: &str) -> Vec<(&'static st
     items
 }
 
-pub fn draw(f: &mut Frame, app: &App, area: Rect) {
+pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     if app.dashboard_widgets.is_empty() {
         draw_welcome_screen(f, app, area);
     } else {
@@ -82,65 +89,197 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     // Centered popup modal to add widget
     if app.is_adding_widget {
         let modal_area = center_rect(65, 20, area);
+        app.layout_zones.widget_add_modal = modal_area;
         draw_add_widget_modal(f, app, modal_area);
     }
 }
 
 fn draw_welcome_screen(f: &mut Frame, app: &App, area: Rect) {
     let lang = &app.tool_config.language;
-    let welcome_text = vec![
+    let selected_port = app.get_selected_port().unwrap_or_else(|| {
+        if lang == "zh" {
+            "未选择".into()
+        } else {
+            "NONE".into()
+        }
+    });
+    let telemetry_points = app
+        .get_selected_port()
+        .and_then(|port| app.waveform_history.get(&port).map(Vec::len))
+        .unwrap_or(0);
+    let latest_channels = app
+        .get_selected_port()
+        .and_then(|port| app.waveform_history.get(&port))
+        .and_then(|frames| frames.last())
+        .map(Vec::len)
+        .unwrap_or(0);
+
+    let title = if lang == "zh" {
+        " 仪表盘工作台 - 未预设模块 "
+    } else {
+        " Dashboard Workspace - No Preset Modules "
+    };
+
+    let lines = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            crate::ui::tr("dash_no_modules", lang),
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-        )),
-        Line::from(""),
         Line::from(vec![
             Span::styled(
-                crate::ui::tr("dash_press_a", lang),
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.success)
-                    .add_modifier(Modifier::BOLD),
+                if lang == "zh" {
+                    "  当前端口  "
+                } else {
+                    "  Active Port  "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
-            Span::raw(crate::ui::tr("dash_open_catalog", lang)),
-        ]),
-        Line::from(vec![
             Span::styled(
-                crate::ui::tr("dash_press_d", lang),
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.danger)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(crate::ui::tr("dash_remove_pane", lang)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                crate::ui::tr("dash_press_tab", lang),
+                selected_port,
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.primary)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(crate::ui::tr("dash_navigate_panes", lang)),
+            Span::raw("    "),
+            Span::styled(
+                if lang == "zh" {
+                    "遥测缓存  "
+                } else {
+                    "Telemetry  "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(
+                format!("{} frames / {} ch", telemetry_points, latest_channels),
+                Style::default().fg(CATPPUCCIN_MOCHA.info),
+            ),
+            Span::raw("    "),
+            Span::styled(
+                if lang == "zh" {
+                    "模块  "
+                } else {
+                    "Modules  "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(
+                format!("{}/6", app.dashboard_widgets.len()),
+                Style::default().fg(CATPPUCCIN_MOCHA.success),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            action_chip(
+                if lang == "zh" {
+                    "添加模块"
+                } else {
+                    "Add Module"
+                },
+                CATPPUCCIN_MOCHA.success,
+                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::AddCatalog),
+            ),
+            Span::raw("  "),
+            action_chip(
+                "Button",
+                CATPPUCCIN_MOCHA.primary,
+                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Button),
+            ),
+            Span::raw("  "),
+            action_chip(
+                "Slider",
+                CATPPUCCIN_MOCHA.accent,
+                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Slider),
+            ),
+            Span::raw("  "),
+            action_chip(
+                "Dashboard",
+                CATPPUCCIN_MOCHA.info,
+                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Dashboard),
+            ),
+            Span::raw("  "),
+            action_chip(
+                "Image",
+                CATPPUCCIN_MOCHA.warning,
+                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Image),
+            ),
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "   ────────────────────────────────────────────────────────",
-            Style::default().fg(CATPPUCCIN_MOCHA.border),
+            if lang == "zh" {
+                "  推荐：点击下面任一行直接添加，也可以点击上方添加模块打开完整目录。"
+            } else {
+                "  Suggested: click a row to add it, or click Add Module for the full catalog."
+            },
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
         )),
+        Line::from(""),
+        suggestion_line(
+            "Button",
+            if lang == "zh" {
+                "串口 START / STOP / RESET / PING 控制面板"
+            } else {
+                "Serial START / STOP / RESET / PING command panel"
+            },
+            CATPPUCCIN_MOCHA.primary,
+            app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Button),
+        ),
+        suggestion_line(
+            "Slider",
+            if lang == "zh" {
+                "可点击调节 Kp / Ki / Kd 参数"
+            } else {
+                "Clickable Kp / Ki / Kd tuning controls"
+            },
+            CATPPUCCIN_MOCHA.accent,
+            app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Slider),
+        ),
+        suggestion_line(
+            "Dashboard",
+            if lang == "zh" {
+                "电机状态、目标速度和控制输出摘要"
+            } else {
+                "Motor state, target speed, and control output summary"
+            },
+            CATPPUCCIN_MOCHA.info,
+            app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Dashboard),
+        ),
+        suggestion_line(
+            "Image",
+            if lang == "zh" {
+                "查看 VOFA 图像或 ROI 数据"
+            } else {
+                "View VOFA image or ROI payloads"
+            },
+            CATPPUCCIN_MOCHA.warning,
+            app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Image),
+        ),
+        suggestion_line(
+            "Cube",
+            if lang == "zh" {
+                "需要 IMU 姿态时再手动添加"
+            } else {
+                "Add manually when IMU orientation is needed"
+            },
+            CATPPUCCIN_MOCHA.success,
+            app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Cube),
+        ),
+        Line::from(""),
         Line::from(Span::styled(
-            crate::ui::tr("dash_split_hint", lang),
+            if lang == "zh" {
+                "  鼠标：点击推荐模块添加；键盘：A 打开目录，D 删除模块，方向键切换模块。"
+            } else {
+                "  Mouse: click suggestions to add; Keyboard: A catalog, D delete, arrows switch panes."
+            },
             Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
         )),
     ];
 
-    let p = Paragraph::new(welcome_text)
+    let p = Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
                 .title(Span::styled(
-                    crate::ui::tr("dash_tiling_workspace", lang),
+                    title,
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),
@@ -150,6 +289,43 @@ fn draw_welcome_screen(f: &mut Frame, app: &App, area: Rect) {
         .alignment(Alignment::Left);
 
     f.render_widget(p, area);
+}
+
+fn action_chip(label: &str, color: ratatui::style::Color, hovered: bool) -> Span<'_> {
+    Span::styled(
+        format!("[ {} ]", label),
+        Style::default().fg(mocha::CRUST).bg(color).add_modifier(
+            Modifier::BOLD
+                | if hovered {
+                    Modifier::REVERSED
+                } else {
+                    Modifier::empty()
+                },
+        ),
+    )
+}
+
+fn suggestion_line<'a>(
+    label: &'a str,
+    description: &'a str,
+    color: ratatui::style::Color,
+    hovered: bool,
+) -> Line<'a> {
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("{:<10}", label),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(description, Style::default().fg(CATPPUCCIN_MOCHA.text)),
+    ])
+    .style(if hovered {
+        Style::default()
+            .bg(CATPPUCCIN_MOCHA.selection_bg)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    })
 }
 
 fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
@@ -169,7 +345,11 @@ fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
     )));
     lines.push(Line::from(""));
 
-    let search_label = format!("{}{}█", crate::ui::tr("dash_search", lang), app.widget_search_input);
+    let search_label = format!(
+        "{}{}█",
+        crate::ui::tr("dash_search", lang),
+        app.widget_search_input
+    );
     lines.push(Line::from(Span::styled(
         search_label,
         Style::default().fg(CATPPUCCIN_MOCHA.text),
@@ -231,7 +411,7 @@ fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // Custom widget drawing functions
-fn draw_button_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
+fn draw_button_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
     let border_color = if is_focused {
         CATPPUCCIN_MOCHA.border_focus
     } else {
@@ -247,7 +427,10 @@ fn draw_button_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            format!(" {} ", crate::ui::tr("widget_button_title", &_app.tool_config.language)),
+            format!(
+                " {} ",
+                crate::ui::tr("widget_button_title", &app.tool_config.language)
+            ),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -263,18 +446,18 @@ fn draw_button_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
         Span::raw("   "),
         Span::styled(
             " [ START ] ",
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .bg(CATPPUCCIN_MOCHA.success)
-                .add_modifier(Modifier::BOLD),
+            widget_button_style(
+                CATPPUCCIN_MOCHA.success,
+                is_focused && app.hover_widget_control == Some(0),
+            ),
         ),
         Span::raw("   "),
         Span::styled(
             " [ STOP ] ",
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .bg(CATPPUCCIN_MOCHA.danger)
-                .add_modifier(Modifier::BOLD),
+            widget_button_style(
+                CATPPUCCIN_MOCHA.danger,
+                is_focused && app.hover_widget_control == Some(1),
+            ),
         ),
     ]));
     lines.push(Line::from(""));
@@ -282,18 +465,18 @@ fn draw_button_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
         Span::raw("   "),
         Span::styled(
             " [ RESET ] ",
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .bg(CATPPUCCIN_MOCHA.warning)
-                .add_modifier(Modifier::BOLD),
+            widget_button_style(
+                CATPPUCCIN_MOCHA.warning,
+                is_focused && app.hover_widget_control == Some(2),
+            ),
         ),
         Span::raw("   "),
         Span::styled(
             " [ PING  ] ",
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .bg(CATPPUCCIN_MOCHA.primary)
-                .add_modifier(Modifier::BOLD),
+            widget_button_style(
+                CATPPUCCIN_MOCHA.primary,
+                is_focused && app.hover_widget_control == Some(3),
+            ),
         ),
     ]));
     lines.push(Line::from(""));
@@ -304,6 +487,27 @@ fn draw_button_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
 
     let p = Paragraph::new(lines).wrap(Wrap { trim: true });
     f.render_widget(p, inner);
+}
+
+fn widget_button_style(color: ratatui::style::Color, hovered: bool) -> Style {
+    Style::default().fg(mocha::CRUST).bg(color).add_modifier(
+        Modifier::BOLD
+            | if hovered {
+                Modifier::REVERSED
+            } else {
+                Modifier::empty()
+            },
+    )
+}
+
+fn widget_control_line_style(hovered: bool) -> Style {
+    if hovered {
+        Style::default()
+            .bg(CATPPUCCIN_MOCHA.selection_bg)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    }
 }
 
 fn draw_slider_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
@@ -322,7 +526,10 @@ fn draw_slider_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            format!(" {} ", crate::ui::tr("widget_slider_title", &app.tool_config.language)),
+            format!(
+                " {} ",
+                crate::ui::tr("widget_slider_title", &app.tool_config.language)
+            ),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -332,51 +539,75 @@ fn draw_slider_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let kp_pct = (app.param_kp / 3.0 * 100.0).min(100.0) as usize;
-    let ki_pct = (app.param_ki / 1.0 * 100.0).min(100.0) as usize;
-    let kd_pct = (app.param_kd / 1.0 * 100.0).min(100.0) as usize;
+    let kp_pct = (app.param_kp / 3.0).clamp(0.0, 1.0);
+    let ki_pct = app.param_ki.clamp(0.0, 1.0);
+    let kd_pct = app.param_kd.clamp(0.0, 1.0);
 
-    let make_track = |pct: usize, color: ratatui::style::Color| {
-        let filled = (pct / 10).min(10);
-        let empty = 10 - filled;
-        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+    let make_track = |pct: f64, color: ratatui::style::Color| {
+        let thumb = (pct.clamp(0.0, 1.0) * PARAM_SLIDER_LAST_OFFSET as f64).round() as usize;
+        let mut bar = String::with_capacity(PARAM_SLIDER_TRACK_WIDTH as usize);
+        for idx in 0..PARAM_SLIDER_TRACK_WIDTH as usize {
+            let ch = if idx == thumb {
+                '|'
+            } else if idx < thumb {
+                '='
+            } else {
+                '-'
+            };
+            bar.push(ch);
+        }
         Span::styled(bar, Style::default().fg(color))
     };
 
     let mut lines = Vec::new();
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("  Kp: ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-        make_track(kp_pct, CATPPUCCIN_MOCHA.accent),
-        Span::styled(
-            format!(" {:.2}", app.param_kp),
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    lines.push(
+        Line::from(vec![
+            Span::styled("  Kp: ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            make_track(kp_pct, CATPPUCCIN_MOCHA.accent),
+            Span::styled(
+                format!(" {:.2}", app.param_kp),
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+        .style(widget_control_line_style(
+            is_focused && app.hover_widget_control == Some(0),
+        )),
+    );
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("  Ki: ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-        make_track(ki_pct, CATPPUCCIN_MOCHA.primary),
-        Span::styled(
-            format!(" {:.2}", app.param_ki),
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    lines.push(
+        Line::from(vec![
+            Span::styled("  Ki: ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            make_track(ki_pct, CATPPUCCIN_MOCHA.primary),
+            Span::styled(
+                format!(" {:.2}", app.param_ki),
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+        .style(widget_control_line_style(
+            is_focused && app.hover_widget_control == Some(1),
+        )),
+    );
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("  Kd: ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-        make_track(kd_pct, CATPPUCCIN_MOCHA.info),
-        Span::styled(
-            format!(" {:.2}", app.param_kd),
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    lines.push(
+        Line::from(vec![
+            Span::styled("  Kd: ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            make_track(kd_pct, CATPPUCCIN_MOCHA.info),
+            Span::styled(
+                format!(" {:.2}", app.param_kd),
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+        .style(widget_control_line_style(
+            is_focused && app.hover_widget_control == Some(2),
+        )),
+    );
 
     let p = Paragraph::new(lines).wrap(Wrap { trim: true });
     f.render_widget(p, inner);
@@ -398,7 +629,10 @@ fn draw_dial_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            format!(" {} ", crate::ui::tr("widget_dial_title", &app.tool_config.language)),
+            format!(
+                " {} ",
+                crate::ui::tr("widget_dial_title", &app.tool_config.language)
+            ),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -468,19 +702,29 @@ fn draw_dial_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         "          0      2.5k      5k",
         Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
     )));
-    lines.push(Line::from(vec![
-        Span::raw("      "),
-        Span::styled(scale, Style::default().fg(CATPPUCCIN_MOCHA.border_focus)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::raw("      "),
-        Span::styled(
-            format!("[{}]", arc),
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    lines.push(
+        Line::from(vec![
+            Span::raw("      "),
+            Span::styled(scale, Style::default().fg(CATPPUCCIN_MOCHA.border_focus)),
+        ])
+        .style(widget_control_line_style(
+            is_focused && app.hover_widget_control == Some(0),
+        )),
+    );
+    lines.push(
+        Line::from(vec![
+            Span::raw("      "),
+            Span::styled(
+                format!("[{}]", arc),
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+        .style(widget_control_line_style(
+            is_focused && app.hover_widget_control == Some(0),
+        )),
+    );
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled(
@@ -576,7 +820,10 @@ fn draw_joystick_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool)
                 .border_type(border_type)
                 .border_style(Style::default().fg(border_color))
                 .title(Span::styled(
-                    format!(" {} ", crate::ui::tr("widget_joystick_title", &_app.tool_config.language)),
+                    format!(
+                        " {} ",
+                        crate::ui::tr("widget_joystick_title", &_app.tool_config.language)
+                    ),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),
@@ -647,7 +894,10 @@ fn draw_light_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            format!(" {} ", crate::ui::tr("widget_light_title", &_app.tool_config.language)),
+            format!(
+                " {} ",
+                crate::ui::tr("widget_light_title", &_app.tool_config.language)
+            ),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -693,7 +943,10 @@ fn draw_gauge_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            format!(" {} ", crate::ui::tr("widget_gauge_title", &app.tool_config.language)),
+            format!(
+                " {} ",
+                crate::ui::tr("widget_gauge_title", &app.tool_config.language)
+            ),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -750,7 +1003,10 @@ fn draw_dashboard_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool)
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            format!(" {} ", crate::ui::tr("widget_dashboard_title", &app.tool_config.language)),
+            format!(
+                " {} ",
+                crate::ui::tr("widget_dashboard_title", &app.tool_config.language)
+            ),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -838,7 +1094,10 @@ fn draw_example_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) 
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            format!(" {} ", crate::ui::tr("widget_example_title", &_app.tool_config.language)),
+            format!(
+                " {} ",
+                crate::ui::tr("widget_example_title", &_app.tool_config.language)
+            ),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -881,7 +1140,7 @@ fn draw_example_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) 
     f.render_widget(p, inner);
 }
 
-fn draw_delay_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
+fn draw_delay_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
     let border_color = if is_focused {
         CATPPUCCIN_MOCHA.border_focus
     } else {
@@ -897,7 +1156,10 @@ fn draw_delay_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            format!(" {} ", crate::ui::tr("widget_delay_title", &_app.tool_config.language)),
+            format!(
+                " {} ",
+                crate::ui::tr("widget_delay_title", &app.tool_config.language)
+            ),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -909,17 +1171,22 @@ fn draw_delay_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
 
     let mut lines = Vec::new();
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::raw("  [ "),
-        Span::styled(
-            "HOLD TO TRIGGER (1.5s)",
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .bg(CATPPUCCIN_MOCHA.warning)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" ]"),
-    ]));
+    lines.push(
+        Line::from(vec![
+            Span::raw("  [ "),
+            Span::styled(
+                "HOLD TO TRIGGER (1.5s)",
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text)
+                    .bg(CATPPUCCIN_MOCHA.warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ]"),
+        ])
+        .style(widget_control_line_style(
+            is_focused && app.hover_widget_control == Some(0),
+        )),
+    );
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::raw("  Progress: "),
@@ -937,7 +1204,7 @@ fn draw_delay_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
     f.render_widget(p, inner);
 }
 
-fn draw_toggle_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
+fn draw_toggle_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
     let border_color = if is_focused {
         CATPPUCCIN_MOCHA.border_focus
     } else {
@@ -953,7 +1220,10 @@ fn draw_toggle_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            format!(" {} ", crate::ui::tr("widget_toggle_title", &_app.tool_config.language)),
+            format!(
+                " {} ",
+                crate::ui::tr("widget_toggle_title", &app.tool_config.language)
+            ),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -965,16 +1235,21 @@ fn draw_toggle_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
 
     let mut lines = Vec::new();
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::raw("  Latching Switch: "),
-        Span::styled(
-            "  [ ON ]  ",
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .bg(CATPPUCCIN_MOCHA.success)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    lines.push(
+        Line::from(vec![
+            Span::raw("  Latching Switch: "),
+            Span::styled(
+                "  [ ON ]  ",
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text)
+                    .bg(CATPPUCCIN_MOCHA.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+        .style(widget_control_line_style(
+            is_focused && app.hover_widget_control == Some(0),
+        )),
+    );
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::raw("  Output Signal:   "),
@@ -1005,7 +1280,10 @@ fn draw_knob_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            format!(" {} ", crate::ui::tr("widget_knob_title", &app.tool_config.language)),
+            format!(
+                " {} ",
+                crate::ui::tr("widget_knob_title", &app.tool_config.language)
+            ),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -1046,11 +1324,16 @@ fn draw_knob_widget(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         ),
     ]));
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::raw("  [Min] "),
-        Span::styled(bar, Style::default().fg(CATPPUCCIN_MOCHA.accent)),
-        Span::raw(" [Max]"),
-    ]));
+    lines.push(
+        Line::from(vec![
+            Span::raw("  [Min] "),
+            Span::styled(bar, Style::default().fg(CATPPUCCIN_MOCHA.accent)),
+            Span::raw(" [Max]"),
+        ])
+        .style(widget_control_line_style(
+            is_focused && app.hover_widget_control == Some(0),
+        )),
+    );
 
     let p = Paragraph::new(lines).wrap(Wrap { trim: true });
     f.render_widget(p, inner);
@@ -1072,7 +1355,10 @@ fn draw_ring_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
         .border_type(border_type)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            format!(" {} ", crate::ui::tr("widget_ring_title", &_app.tool_config.language)),
+            format!(
+                " {} ",
+                crate::ui::tr("widget_ring_title", &_app.tool_config.language)
+            ),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -1137,7 +1423,10 @@ fn draw_pad_widget(f: &mut Frame, _app: &App, area: Rect, is_focused: bool) {
                 .border_type(border_type)
                 .border_style(Style::default().fg(border_color))
                 .title(Span::styled(
-                    format!(" {} ", crate::ui::tr("widget_pad_title", &_app.tool_config.language)),
+                    format!(
+                        " {} ",
+                        crate::ui::tr("widget_pad_title", &_app.tool_config.language)
+                    ),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),

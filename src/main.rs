@@ -6,8 +6,12 @@ mod vofa;
 mod worker;
 
 use app::{ActiveTab, App, PlotterMode, WidgetType};
+use config::PROJECT_CONFIG_FIELD_COUNT;
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind},
+    event::{
+        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
+        KeyModifiers,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -16,14 +20,30 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{io, time::Duration};
 use tokio::sync::mpsc;
 
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let mut stdout = std::io::stdout();
+    let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Setup panic hook to restore terminal
+    std::panic::set_hook(Box::new(|info| {
+        restore_terminal();
+        eprintln!("Panic occurred: {:?}", info);
+    }));
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+
+    // Setup signal handlers for SIGINT/SIGTERM
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
 
     // Create app
     let config_path = "project_config.json".to_string();
@@ -34,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create channel for worker messages
     let (tx, mut rx) = mpsc::channel(100);
+    app.worker_tx = Some(tx.clone());
 
     // Setup input events stream & ticks
     let mut reader = EventStream::new();
@@ -48,6 +69,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Background worker messages
             Some(msg) = rx.recv() => {
                 app.handle_worker_message(msg);
+            }
+            // Signal handlers
+            _ = sigterm.recv() => {
+                exit = true;
+            }
+            _ = sigint.recv() => {
+                exit = true;
             }
             // Standard ticks
             _ = interval.tick() => {
@@ -65,7 +93,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match event {
                         Event::Key(key) => {
                             if key.kind == KeyEventKind::Press {
-                                if app.show_exit_menu {
+                                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                                    exit = true;
+                                } else if app.show_exit_menu {
                                     match key.code {
                                         KeyCode::Esc => {
                                             app.show_exit_menu = false;
@@ -119,24 +149,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             app.show_port_menu = false;
                                         }
                                         KeyCode::Up => {
-                                            let total_items = app.channels.len() + 1;
-                                            if app.port_menu_selected > 0 {
-                                                app.port_menu_selected -= 1;
-                                            } else {
-                                                app.port_menu_selected = total_items - 1;
+                                            let total_items = app.channels.len();
+                                            if total_items > 0 {
+                                                if app.port_menu_selected > 0 {
+                                                    app.port_menu_selected -= 1;
+                                                } else {
+                                                    app.port_menu_selected = total_items - 1;
+                                                }
                                             }
                                         }
                                         KeyCode::Down => {
-                                            let total_items = app.channels.len() + 1;
-                                            if app.port_menu_selected < total_items - 1 {
-                                                app.port_menu_selected += 1;
-                                            } else {
-                                                app.port_menu_selected = 0;
+                                            let total_items = app.channels.len();
+                                            if total_items > 0 {
+                                                if app.port_menu_selected < total_items - 1 {
+                                                    app.port_menu_selected += 1;
+                                                } else {
+                                                    app.port_menu_selected = 0;
+                                                }
                                             }
                                         }
                                         KeyCode::Enter => {
-                                            let total_items = app.channels.len() + 1;
-                                            if app.port_menu_selected < total_items {
+                                            let total_items = app.channels.len();
+                                            if total_items > 0 && app.port_menu_selected < total_items {
                                                 app.selected_channel_idx = app.port_menu_selected;
                                                 if let Some(port) = app.get_selected_port() {
                                                     app.log(format!("Selected port switched to {}.", port));
@@ -191,24 +225,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         KeyCode::Enter => {
                                             let cmd = app.serial_send_buffer.trim().to_string();
                                             if !cmd.is_empty() {
-                                                let port = app.get_selected_port().unwrap_or_else(|| "NONE".to_string());
-                                                app.log(format!("[{}] [TX] {}", port, cmd));
-                                                app.serial_send_history.push(cmd.clone());
-
-                                                // Simulated interactive command responses
-                                                let response = match cmd.as_str() {
-                                                    "AT" => Some("OK".to_string()),
-                                                    "AT+GMR" => Some("ESP32-D0WDQ6-V3 (IDF v4.4, PioPulse Mock v0.1.3)".to_string()),
-                                                    "help" | "?" => Some("Available commands: AT, AT+GMR, RESET, help".to_string()),
-                                                    "RESET" => {
-                                                        app.log(format!("[{}] [RX] System restarting...", port));
-                                                        Some("System Initialized. Ready.".to_string())
-                                                    }
-                                                    _ => Some(format!("Error: Unknown command '{}'. Type 'help'.", cmd)),
-                                                };
-                                                if let Some(resp) = response {
-                                                    app.log(format!("[{}] [RX] {}", port, resp));
-                                                }
+                                                app.submit_serial_command(&cmd);
 
                                                 app.serial_send_buffer.clear();
                                             }
@@ -292,6 +309,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         KeyCode::Char('4') => app.active_tab = ActiveTab::Flasher,
                                         KeyCode::Char('5') => app.active_tab = ActiveTab::Configuration,
 
+                                        KeyCode::Char('p') | KeyCode::Char('P') => {
+                                            if app.active_tab == ActiveTab::Serial {
+                                                app.show_port_menu = !app.show_port_menu;
+                                                app.port_menu_selected = app.selected_channel_idx;
+                                            }
+                                        }
+
                                         KeyCode::Char('a') | KeyCode::Char('A') => {
                                             if app.active_tab == ActiveTab::Widgets {
                                                 app.is_adding_widget = true;
@@ -360,7 +384,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
                                         KeyCode::Char('r') | KeyCode::Char('R') => {
-                                            if app.active_tab == ActiveTab::Widgets && app.dashboard_widgets.get(app.selected_widget_idx) == Some(&WidgetType::Cube) {
+                                            if app.active_tab == ActiveTab::Serial {
+                                                app.toggle_serial_recording();
+                                            } else if app.active_tab == ActiveTab::Widgets && app.dashboard_widgets.get(app.selected_widget_idx) == Some(&WidgetType::Cube) {
                                                 app.manual_imu_override = true;
                                                 app.manual_pitch = 0.0;
                                                 app.manual_roll = 0.0;
@@ -369,6 +395,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.manual_ty = 0.0;
                                                 app.manual_tz = 0.0;
                                                 app.log("Manual override rotations & translations reset to 0.");
+                                            }
+                                        }
+                                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                            if app.active_tab == ActiveTab::Serial {
+                                                if app.serial_playback_active {
+                                                    app.stop_serial_timeline_playback();
+                                                } else {
+                                                    app.start_serial_timeline_playback();
+                                                }
                                             }
                                         }
 
@@ -387,8 +422,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         KeyCode::Char('s') | KeyCode::Char('S') => {
                                             if app.active_tab == ActiveTab::Plotter {
-                                                app.set_simulation_active(!app.simulation_active);
-                                                app.log(format!("Simulated waveform source: {}", if app.simulation_active { "ON" } else { "OFF" }));
+                                                app.set_plotter_active(!app.plotter_active);
+                                                app.log(format!("Plotter active: {}", if app.plotter_active { "ON" } else { "OFF" }));
                                             } else if app.active_tab == ActiveTab::Serial {
                                                 app.serial_auto_scroll = !app.serial_auto_scroll;
                                                 app.log(format!("Auto Scroll: {}", if app.serial_auto_scroll { "ENABLED" } else { "DISABLED" }));
@@ -396,13 +431,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         KeyCode::Char('b') | KeyCode::Char('B') => {
                                             if app.active_tab == ActiveTab::Serial {
-                                                app.serial_baud_rate = match app.serial_baud_rate {
-                                                    9600 => 115200,
-                                                    115200 => 921600,
-                                                    921600 => 1152000,
-                                                    _ => 9600,
-                                                };
-                                                app.log(format!("Baud rate set to {} bps.", app.serial_baud_rate));
+                                                app.cycle_serial_baud_rate();
                                             }
                                         }
                                         KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -419,34 +448,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         KeyCode::Char('v') | KeyCode::Char('V') => {
                                             if app.active_tab == ActiveTab::Plotter {
-                                                app.plotter_mode = match app.plotter_mode {
-                                                    crate::app::PlotterMode::Waveform => crate::app::PlotterMode::BarChart,
-                                                    crate::app::PlotterMode::BarChart => crate::app::PlotterMode::Histogram,
-                                                    crate::app::PlotterMode::Histogram => crate::app::PlotterMode::FftSpectrum,
-                                                    crate::app::PlotterMode::FftSpectrum
-                                                    | crate::app::PlotterMode::IMUCube
-                                                    | crate::app::PlotterMode::RoiImage => crate::app::PlotterMode::Waveform,
-                                                };
-                                                app.log(format!("Plotter View Mode set to {:?}", app.plotter_mode));
+                                                app.cycle_plotter_mode();
                                             }
                                         }
                                         KeyCode::Char('m') | KeyCode::Char('M') => {
                                             if app.active_tab == ActiveTab::Plotter {
-                                                app.vofa_mode = match app.vofa_mode {
-                                                    crate::vofa::VofaMode::FireWater => crate::vofa::VofaMode::JustFloat,
-                                                    crate::vofa::VofaMode::JustFloat => crate::vofa::VofaMode::IndexFloat,
-                                                    crate::vofa::VofaMode::IndexFloat => crate::vofa::VofaMode::FireWater,
-                                                };
-                                                crate::vofa::ACTIVE_VOFA_MODE.store(
-                                                    app.vofa_mode.to_u8(),
-                                                    std::sync::atomic::Ordering::Relaxed,
-                                                );
-                                                app.log(format!("VOFA+ Protocol Mode set to {:?}", app.vofa_mode));
+                                                app.cycle_vofa_mode();
+                                            }
+                                        }
+                                        KeyCode::Char('+') | KeyCode::Char('=') => {
+                                            if app.active_tab == ActiveTab::Plotter {
+                                                app.zoom_plotter_view(true);
+                                            }
+                                        }
+                                        KeyCode::Char('-') | KeyCode::Char('_') => {
+                                            if app.active_tab == ActiveTab::Plotter {
+                                                app.zoom_plotter_view(false);
+                                            }
+                                        }
+                                        KeyCode::Char(',') | KeyCode::Char('<') => {
+                                            if app.active_tab == ActiveTab::Plotter {
+                                                app.pan_plotter_view(true);
+                                            }
+                                        }
+                                        KeyCode::Char('.') | KeyCode::Char('>') => {
+                                            if app.active_tab == ActiveTab::Plotter {
+                                                app.pan_plotter_view(false);
+                                            }
+                                        }
+                                        KeyCode::Char('0') => {
+                                            if app.active_tab == ActiveTab::Plotter {
+                                                app.reset_plotter_view();
                                             }
                                         }
                                         KeyCode::Left => {
                                             if app.active_tab == ActiveTab::Plotter {
-                                                let limit = app.channels.len() + 1;
+                                                let limit = app.channels.len();
                                                 if limit > 0 {
                                                     if app.selected_channel_idx > 0 {
                                                         app.selected_channel_idx -= 1;
@@ -469,7 +506,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         KeyCode::Char('[') => {
                                             if app.active_tab == ActiveTab::Plotter {
-                                                let limit = app.channels.len() + 1;
+                                                let limit = app.channels.len();
                                                 if limit > 0 {
                                                     if app.selected_channel_idx > 0 {
                                                         app.selected_channel_idx -= 1;
@@ -481,7 +518,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         KeyCode::Right => {
                                             if app.active_tab == ActiveTab::Plotter {
-                                                let limit = app.channels.len() + 1;
+                                                let limit = app.channels.len();
                                                 if limit > 0 {
                                                     if app.selected_channel_idx < limit - 1 {
                                                         app.selected_channel_idx += 1;
@@ -504,7 +541,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         KeyCode::Char(']') => {
                                             if app.active_tab == ActiveTab::Plotter {
-                                                let limit = app.channels.len() + 1;
+                                                let limit = app.channels.len();
                                                 if limit > 0 {
                                                     if app.selected_channel_idx < limit - 1 {
                                                         app.selected_channel_idx += 1;
@@ -541,8 +578,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         KeyCode::Char(' ') => {
                                             if app.active_tab == ActiveTab::Plotter {
-                                                app.set_simulation_active(!app.simulation_active);
-                                                app.log(format!("Simulated waveform source: {}", if app.simulation_active { "ON" } else { "OFF" }));
+                                                app.set_plotter_active(!app.plotter_active);
+                                                app.log(format!("Plotter active: {}", if app.plotter_active { "ON" } else { "OFF" }));
                                             } else if app.active_tab == ActiveTab::Flasher || app.active_tab == ActiveTab::Configuration {
                                                 app.start_flashing(tx.clone());
                                             } else if app.active_tab == ActiveTab::Serial {
@@ -554,13 +591,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 if app.selected_config_field > 0 {
                                                     app.selected_config_field -= 1;
                                                 } else {
-                                                    app.selected_config_field = 13;
+                                                    app.selected_config_field =
+                                                        PROJECT_CONFIG_FIELD_COUNT - 1;
                                                 }
                                             }
                                         }
                                         KeyCode::Down => {
                                             if app.active_tab == ActiveTab::Configuration {
-                                                if app.selected_config_field < 13 {
+                                                if app.selected_config_field
+                                                    < PROJECT_CONFIG_FIELD_COUNT - 1
+                                                {
                                                     app.selected_config_field += 1;
                                                 } else {
                                                     app.selected_config_field = 0;
@@ -594,6 +634,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 crossterm::event::MouseEventKind::ScrollDown => {
                                     app.handle_mouse_scroll(false);
                                 }
+                                crossterm::event::MouseEventKind::Moved => {
+                                    app.handle_mouse_move(mouse.column, mouse.row);
+                                }
                                 _ => {}
                             }
                         }
@@ -605,12 +648,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    restore_terminal();
     terminal.show_cursor()?;
 
     Ok(())

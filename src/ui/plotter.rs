@@ -17,21 +17,36 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(3),
             Constraint::Min(10),
-            Constraint::Length(5),
+            Constraint::Length(4),
         ])
         .split(area);
 
+    app.layout_zones.plotter_header = main_layout[0];
+    app.layout_zones.plotter_send_panel = main_layout[2];
+
     draw_header_bar(f, app, main_layout[0]);
 
-    let body_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(28), Constraint::Min(36)])
-        .split(main_layout[1]);
+    if main_layout[1].width < 88 {
+        app.layout_zones.plotter_port_selector = Rect::default();
+        let body_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(10), Constraint::Length(8)])
+            .split(main_layout[1]);
 
-    draw_connection_rail(f, app, body_layout[0]);
-    draw_chart_panel(f, app, body_layout[1]);
+        draw_chart_panel(f, app, body_layout[0]);
+        draw_telemetry_stats(f, app, body_layout[1]);
+    } else {
+        let body_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(28), Constraint::Min(36)])
+            .split(main_layout[1]);
+
+        draw_connection_rail(f, app, body_layout[0]);
+        draw_chart_panel(f, app, body_layout[1]);
+    }
+
     draw_send_panel(f, app, main_layout[2]);
 }
 
@@ -39,7 +54,7 @@ fn draw_header_bar(f: &mut Frame, app: &App, area: Rect) {
     let selected_port = app
         .get_selected_port()
         .unwrap_or_else(|| "NONE".to_string());
-    let is_running = app.simulation_active;
+    let is_running = app.plotter_active;
     let lang = &app.tool_config.language;
     let stream_label = if is_running {
         if lang == "zh" { "运行中" } else { "RUNNING" }
@@ -65,13 +80,33 @@ fn draw_header_bar(f: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            pill(if lang == "zh" { "端口" } else { "Port" }, &selected_port, CATPPUCCIN_MOCHA.primary),
+            pill(
+                if lang == "zh" { "端口" } else { "Port" },
+                &selected_port,
+                CATPPUCCIN_MOCHA.primary,
+                app.hover_plotter_header_action == Some(0),
+            ),
             Span::raw("  "),
-            pill(if lang == "zh" { "协议" } else { "Protocol" }, &protocol_str, CATPPUCCIN_MOCHA.accent),
+            pill(
+                if lang == "zh" { "协议" } else { "Protocol" },
+                &protocol_str,
+                CATPPUCCIN_MOCHA.accent,
+                app.hover_plotter_header_action == Some(1),
+            ),
             Span::raw("  "),
-            pill(if lang == "zh" { "视图" } else { "View" }, &view_str, CATPPUCCIN_MOCHA.info),
+            pill(
+                if lang == "zh" { "视图" } else { "View" },
+                &view_str,
+                CATPPUCCIN_MOCHA.info,
+                app.hover_plotter_header_action == Some(2),
+            ),
             Span::raw("  "),
-            pill(if lang == "zh" { "状态" } else { "State" }, stream_label, stream_color),
+            pill(
+                if lang == "zh" { "状态" } else { "State" },
+                stream_label,
+                stream_color,
+                app.hover_plotter_header_action == Some(3),
+            ),
         ]),
         Line::from(vec![
             key_hint("Left/Right"),
@@ -84,6 +119,18 @@ fn draw_header_bar(f: &mut Frame, app: &App, area: Rect) {
             Span::raw(tr("plot_start_hint", lang)),
             key_hint("C"),
             Span::raw(tr("plot_clear_hint", lang)),
+            key_hint("+/-"),
+            Span::raw(if lang == "zh" {
+                " 缩放   "
+            } else {
+                " zoom   "
+            }),
+            key_hint(",./0"),
+            Span::raw(if lang == "zh" {
+                " 平移/最新"
+            } else {
+                " pan/latest"
+            }),
         ]),
     ];
 
@@ -97,13 +144,24 @@ fn draw_header_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(p, area);
 }
 
-fn pill(label: &str, value: &str, color: ratatui::style::Color) -> Span<'static> {
+fn pill(label: &str, value: &str, color: ratatui::style::Color, hovered: bool) -> Span<'static> {
     Span::styled(
         format!(" {}: {} ", label, value),
         Style::default()
             .fg(color)
-            .bg(mocha::SURFACE0)
-            .add_modifier(Modifier::BOLD),
+            .bg(if hovered {
+                CATPPUCCIN_MOCHA.selection_bg
+            } else {
+                mocha::SURFACE0
+            })
+            .add_modifier(
+                Modifier::BOLD
+                    | if hovered {
+                        Modifier::REVERSED
+                    } else {
+                        Modifier::empty()
+                    },
+            ),
     )
 }
 
@@ -123,22 +181,7 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
             draw_receive_console(f, app, area);
         }
         _ => {
-            let requested_port = app.get_selected_port();
-            let requested_has_points = requested_port
-                .as_ref()
-                .and_then(|port| app.waveform_history.get(port))
-                .is_some_and(|points| !points.is_empty());
-            let simulated_has_points = app
-                .waveform_history
-                .get("SIMULATED")
-                .is_some_and(|points| !points.is_empty());
-            let selected_port = if requested_has_points {
-                requested_port
-            } else if simulated_has_points {
-                Some("SIMULATED".to_string())
-            } else {
-                requested_port
-            };
+            let selected_port = app.get_selected_port();
             let history = selected_port
                 .as_ref()
                 .and_then(|port| app.waveform_history.get(port));
@@ -147,14 +190,27 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                 Some(points) if !points.is_empty() => {
                     match app.plotter_mode {
                         crate::app::PlotterMode::Waveform => {
-                            let num_channels = points[0].len();
+                            let (visible_start, visible_end) =
+                                waveform_visible_range(app, points.len());
+                            let visible_points = &points[visible_start..visible_end];
+                            let num_channels = visible_points
+                                .iter()
+                                .map(Vec::len)
+                                .max()
+                                .unwrap_or_default();
+                            let sample_count = points.len();
+                            let visible_count = visible_points.len();
+                            let first_x = visible_start as f64;
+                            let last_x = visible_end.saturating_sub(1) as f64;
+                            let x_max = last_x.max(first_x + 1.0);
 
                             let mut datasets_data: Vec<Vec<(f64, f64)>> =
                                 vec![Vec::new(); num_channels];
-                            for (x_idx, val_vector) in points.iter().enumerate() {
+                            for (x_idx, val_vector) in visible_points.iter().enumerate() {
                                 for (ch_idx, &val) in val_vector.iter().enumerate() {
-                                    if ch_idx < num_channels {
-                                        datasets_data[ch_idx].push((x_idx as f64, val as f64));
+                                    if ch_idx < num_channels && val.is_finite() {
+                                        datasets_data[ch_idx]
+                                            .push(((visible_start + x_idx) as f64, val as f64));
                                     }
                                 }
                             }
@@ -173,6 +229,9 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
 
                             let mut datasets = Vec::new();
                             for ch_idx in 0..num_channels {
+                                if datasets_data[ch_idx].is_empty() {
+                                    continue;
+                                }
                                 let color = colors[ch_idx % colors.len()];
                                 let dataset = Dataset::default()
                                     .name(format!("CH {}", ch_idx))
@@ -183,47 +242,80 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                                 datasets.push(dataset);
                             }
 
-                            let mut min_y = -10.0f64;
-                            let mut max_y = 10.0f64;
-                            let mut has_points = false;
-                            for val_vector in points {
-                                for &val in val_vector {
-                                    let v = val as f64;
-                                    if !v.is_nan() && !v.is_infinite() {
-                                        if !has_points {
-                                            min_y = v;
-                                            max_y = v;
-                                            has_points = true;
-                                        } else {
-                                            if v < min_y {
-                                                min_y = v;
-                                            }
-                                            if v > max_y {
-                                                max_y = v;
-                                            }
-                                        }
-                                    }
-                                }
+                            let (min_y, max_y) =
+                                padded_y_bounds(visible_points, 0.10).unwrap_or((-10.0, 10.0));
+                            let trigger_y = (min_y + max_y) / 2.0;
+                            let x_bounds = [first_x, x_max];
+                            let zero_line = vec![(first_x, 0.0), (x_max, 0.0)];
+                            let trigger_line = vec![(first_x, trigger_y), (x_max, trigger_y)];
+                            let cursor_line = vec![(last_x, min_y), (last_x, max_y)];
+
+                            if min_y < 0.0 && max_y > 0.0 {
+                                datasets.push(
+                                    Dataset::default()
+                                        .name(if lang == "zh" { "零位" } else { "Zero" })
+                                        .marker(Marker::Braille)
+                                        .graph_type(GraphType::Line)
+                                        .style(Style::default().fg(CATPPUCCIN_MOCHA.border))
+                                        .data(&zero_line),
+                                );
                             }
 
-                            // Add padding to bounds
-                            if min_y == max_y {
-                                min_y -= 1.0;
-                                max_y += 1.0;
+                            datasets.push(
+                                Dataset::default()
+                                    .name(if lang == "zh" {
+                                        "触发参考"
+                                    } else {
+                                        "Trigger Ref"
+                                    })
+                                    .marker(Marker::Braille)
+                                    .graph_type(GraphType::Line)
+                                    .style(Style::default().fg(CATPPUCCIN_MOCHA.warning))
+                                    .data(&trigger_line),
+                            );
+                            datasets.push(
+                                Dataset::default()
+                                    .name(if lang == "zh" {
+                                        "最新采样"
+                                    } else {
+                                        "Latest"
+                                    })
+                                    .marker(Marker::Braille)
+                                    .graph_type(GraphType::Line)
+                                    .style(Style::default().fg(CATPPUCCIN_MOCHA.text_muted))
+                                    .data(&cursor_line),
+                            );
+
+                            let chart_area = if area.height >= 16 {
+                                let chunks = Layout::default()
+                                    .direction(Direction::Vertical)
+                                    .constraints([Constraint::Length(3), Constraint::Min(8)])
+                                    .split(area);
+                                draw_waveform_info_bar(
+                                    f,
+                                    app,
+                                    visible_points,
+                                    sample_count,
+                                    visible_start,
+                                    visible_end,
+                                    chunks[0],
+                                );
+                                chunks[1]
                             } else {
-                                let diff = max_y - min_y;
-                                min_y -= diff * 0.1;
-                                max_y += diff * 0.1;
-                            }
+                                area
+                            };
 
                             let x_labels = vec![
-                                Span::styled("0", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
                                 Span::styled(
-                                    "50",
+                                    visible_start.to_string(),
                                     Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
                                 ),
                                 Span::styled(
-                                    "100 (Latest)",
+                                    format!("{:.0}", (first_x + last_x) / 2.0),
+                                    Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+                                ),
+                                Span::styled(
+                                    format!("{:.0} {}", last_x, tr("plot_latest", lang)),
                                     Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
                                 ),
                             ];
@@ -243,16 +335,29 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                                 ),
                             ];
 
-                            let status_tag = if app.simulation_active {
+                            let status_tag = if app.plotter_active {
                                 ""
                             } else {
-                                if lang == "zh" { " [已暂停]" } else { " [PAUSED]" }
+                                if lang == "zh" {
+                                    " [已暂停]"
+                                } else {
+                                    " [PAUSED]"
+                                }
                             };
                             let title_str = format!(
-                                " {} ({}){} ",
-                                if lang == "zh" { "波形观测器 Scope" } else { "Waveform Scope" },
+                                " {} ({}){} | {} {}/{} | {} {:.2} ",
+                                if lang == "zh" {
+                                    "波形观测器 Scope"
+                                } else {
+                                    "Waveform Scope"
+                                },
                                 selected_port.unwrap(),
-                                status_tag
+                                status_tag,
+                                tr("plot_samples", lang),
+                                visible_count,
+                                sample_count,
+                                tr("plot_trigger_ref", lang),
+                                trigger_y
                             );
                             let chart = Chart::new(datasets)
                                 .block(
@@ -271,7 +376,7 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                                 )
                                 .x_axis(
                                     ratatui::widgets::Axis::default()
-                                        .bounds([0.0, 100.0])
+                                        .bounds(x_bounds)
                                         .labels(x_labels)
                                         .style(Style::default().fg(CATPPUCCIN_MOCHA.border)),
                                 )
@@ -282,7 +387,7 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                                         .style(Style::default().fg(CATPPUCCIN_MOCHA.border)),
                                 );
 
-                            f.render_widget(chart, area);
+                            f.render_widget(chart, chart_area);
                         }
                         crate::app::PlotterMode::BarChart => {
                             let latest = &points[points.len() - 1];
@@ -333,14 +438,22 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                                 max_y += diff * 0.15;
                             }
 
-                            let status_tag = if app.simulation_active {
+                            let status_tag = if app.plotter_active {
                                 ""
                             } else {
-                                if lang == "zh" { " [已暂停]" } else { " [PAUSED]" }
+                                if lang == "zh" {
+                                    " [已暂停]"
+                                } else {
+                                    " [PAUSED]"
+                                }
                             };
                             let title_str = format!(
                                 " {} ({}){} ",
-                                if lang == "zh" { "柱状图 - 通道实时数值" } else { "Bar Chart - Latest Channel Values" },
+                                if lang == "zh" {
+                                    "柱状图 - 通道实时数值"
+                                } else {
+                                    "Bar Chart - Latest Channel Values"
+                                },
                                 selected_port.unwrap(),
                                 status_tag
                             );
@@ -422,9 +535,11 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                             }
 
                             if ch0_vals.is_empty() {
-                                let helper = Paragraph::new(
-                                    if lang == "zh" { "无活动数据用于通道 0 直方图计算。" } else { "No active data for CH 0 Histogram calculation." },
-                                )
+                                let helper = Paragraph::new(if lang == "zh" {
+                                    "无活动数据用于通道 0 直方图计算。"
+                                } else {
+                                    "No active data for CH 0 Histogram calculation."
+                                })
                                 .style(Style::default().fg(CATPPUCCIN_MOCHA.text_muted))
                                 .alignment(Alignment::Center);
                                 f.render_widget(helper, area);
@@ -448,14 +563,22 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
 
                                 let max_count = bins.iter().copied().max().unwrap_or(1) as f64;
 
-                                let status_tag = if app.simulation_active {
+                                let status_tag = if app.plotter_active {
                                     ""
                                 } else {
-                                    if lang == "zh" { " [已暂停]" } else { " [PAUSED]" }
+                                    if lang == "zh" {
+                                        " [已暂停]"
+                                    } else {
+                                        " [PAUSED]"
+                                    }
                                 };
                                 let title_str = format!(
                                     " {} ({}){} ",
-                                    if lang == "zh" { "实时直方图 - 通道 0 统计分布" } else { "Real-Time Histogram - CH 0 Statistical Distribution" },
+                                    if lang == "zh" {
+                                        "实时直方图 - 通道 0 统计分布"
+                                    } else {
+                                        "Real-Time Histogram - CH 0 Statistical Distribution"
+                                    },
                                     selected_port.unwrap(),
                                     status_tag
                                 );
@@ -517,12 +640,20 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                                         ctx.print(
                                             4.5,
                                             max_count * 1.05,
-                                            if lang == "zh" { format!("范围: [{:.1}, {:.1}]", min_val, max_val) } else { format!("Range: [{:.1}, {:.1}]", min_val, max_val) },
+                                            if lang == "zh" {
+                                                format!("范围: [{:.1}, {:.1}]", min_val, max_val)
+                                            } else {
+                                                format!("Range: [{:.1}, {:.1}]", min_val, max_val)
+                                            },
                                         );
                                         ctx.print(
                                             4.5,
                                             max_count * 0.95,
-                                            if lang == "zh" { format!("样本数: {}", ch0_vals.len()) } else { format!("Samples: {}", ch0_vals.len()) },
+                                            if lang == "zh" {
+                                                format!("样本数: {}", ch0_vals.len())
+                                            } else {
+                                                format!("Samples: {}", ch0_vals.len())
+                                            },
                                         );
                                     });
 
@@ -540,9 +671,11 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                             }
 
                             if ch0_vals.len() < 8 {
-                                let helper = Paragraph::new(
-                                    if lang == "zh" { "数据点不足，无法进行 FFT 分析（需要至少 8 个样本）。" } else { "Insufficient data points for FFT analysis (Need >= 8 samples)." },
-                                )
+                                let helper = Paragraph::new(if lang == "zh" {
+                                    "数据点不足，无法进行 FFT 分析（需要至少 8 个样本）。"
+                                } else {
+                                    "Insufficient data points for FFT analysis (Need >= 8 samples)."
+                                })
                                 .style(Style::default().fg(CATPPUCCIN_MOCHA.text_muted))
                                 .alignment(Alignment::Center);
                                 f.render_widget(helper, area);
@@ -592,14 +725,22 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                                 let hz_per_bin = sampling_freq / 32.0;
                                 let peak_freq = peak_k as f64 * hz_per_bin;
 
-                                let status_tag = if app.simulation_active {
+                                let status_tag = if app.plotter_active {
                                     ""
                                 } else {
-                                    if lang == "zh" { " [已暂停]" } else { " [PAUSED]" }
+                                    if lang == "zh" {
+                                        " [已暂停]"
+                                    } else {
+                                        " [PAUSED]"
+                                    }
                                 };
                                 let title_str = format!(
                                     " {} ({}){} ",
-                                    if lang == "zh" { "实时 FFT 频谱图 - 通道 0 频域" } else { "Real-Time FFT Spectrum - CH 0 Frequency Domain" },
+                                    if lang == "zh" {
+                                        "实时 FFT 频谱图 - 通道 0 频域"
+                                    } else {
+                                        "Real-Time FFT Spectrum - CH 0 Frequency Domain"
+                                    },
                                     selected_port.unwrap(),
                                     status_tag
                                 );
@@ -652,12 +793,20 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
                                         ctx.print(
                                             9.0,
                                             max_mag * 1.05,
-                                            if lang == "zh" { format!("峰值频率: {:.2} Hz", peak_freq) } else { format!("Peak Freq: {:.2} Hz", peak_freq) },
+                                            if lang == "zh" {
+                                                format!("峰值频率: {:.2} Hz", peak_freq)
+                                            } else {
+                                                format!("Peak Freq: {:.2} Hz", peak_freq)
+                                            },
                                         );
                                         ctx.print(
                                             9.0,
                                             max_mag * 0.95,
-                                            if lang == "zh" { format!("分辨率: {:.4} Hz/bin", hz_per_bin) } else { format!("Resolution: {:.4} Hz/bin", hz_per_bin) },
+                                            if lang == "zh" {
+                                                format!("分辨率: {:.4} Hz/bin", hz_per_bin)
+                                            } else {
+                                                format!("Resolution: {:.4} Hz/bin", hz_per_bin)
+                                            },
                                         );
                                     });
 
@@ -675,6 +824,185 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
+}
+
+fn draw_waveform_info_bar(
+    f: &mut Frame,
+    app: &App,
+    points: &[Vec<f32>],
+    total_samples: usize,
+    visible_start: usize,
+    visible_end: usize,
+    area: Rect,
+) {
+    let lang = &app.tool_config.language;
+    let latest = points.last();
+    let channel_count = points.iter().map(Vec::len).max().unwrap_or_default();
+    let latest_ch0 = latest.and_then(|row| row.first()).copied();
+    let (min_y, max_y) = raw_y_bounds(points).unwrap_or((0.0, 0.0));
+    let trigger_y = (min_y + max_y) / 2.0;
+    let ch0_stats = channel_stats(points, 0);
+
+    let quality = if latest_ch0.is_some_and(f32::is_finite) {
+        tr("plot_signal_locked", lang)
+    } else {
+        tr("plot_signal_waiting", lang)
+    };
+    let quality_color = if latest_ch0.is_some_and(f32::is_finite) {
+        CATPPUCCIN_MOCHA.success
+    } else {
+        CATPPUCCIN_MOCHA.warning
+    };
+
+    let mut spans = vec![
+        Span::styled(
+            tr("plot_overview", lang),
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        metric_span(
+            tr("plot_samples", lang),
+            &format!("{}/{}", points.len(), total_samples),
+        ),
+        Span::raw("  "),
+        metric_span(
+            if lang == "zh" { "窗口" } else { "Window" },
+            &format!("{}..{}", visible_start, visible_end.saturating_sub(1)),
+        ),
+        Span::raw("  "),
+        metric_span(
+            if lang == "zh" { "偏移" } else { "Offset" },
+            &app.plotter_view_offset.to_string(),
+        ),
+        Span::raw("  "),
+        metric_span(tr("plot_channels", lang), &channel_count.to_string()),
+        Span::raw("  "),
+        metric_span(
+            tr("plot_range", lang),
+            &format!("{:.2}..{:.2}", min_y, max_y),
+        ),
+        Span::raw("  "),
+        metric_span(tr("plot_trigger_ref", lang), &format!("{:.2}", trigger_y)),
+        Span::raw("  "),
+        Span::styled(
+            quality,
+            Style::default()
+                .fg(quality_color)
+                .bg(mocha::SURFACE0)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+
+    if let Some(stats) = ch0_stats {
+        spans.push(Span::raw("  "));
+        spans.push(metric_span(
+            if lang == "zh" { "CH0均值" } else { "CH0 Avg" },
+            &format!("{:.2}", stats.avg),
+        ));
+    }
+
+    let panel = Paragraph::new(Line::from(spans))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border)),
+        )
+        .style(Style::default().bg(CATPPUCCIN_MOCHA.panel))
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(panel, area);
+}
+
+fn waveform_visible_range(app: &App, total: usize) -> (usize, usize) {
+    if total == 0 {
+        return (0, 0);
+    }
+
+    let span = app.plotter_view_samples.clamp(1, 100).min(total);
+    let max_offset = total.saturating_sub(span);
+    let offset = app.plotter_view_offset.min(max_offset);
+    let end = total.saturating_sub(offset).max(1);
+    let start = end.saturating_sub(span);
+
+    (start, end)
+}
+
+fn metric_span(label: &str, value: &str) -> Span<'static> {
+    Span::styled(
+        format!("{} {}", label, value),
+        Style::default()
+            .fg(CATPPUCCIN_MOCHA.info)
+            .bg(mocha::SURFACE0),
+    )
+}
+
+#[derive(Clone, Copy)]
+struct ChannelStats {
+    avg: f32,
+}
+
+fn channel_stats(points: &[Vec<f32>], channel: usize) -> Option<ChannelStats> {
+    let mut sum = 0.0;
+    let mut count = 0;
+
+    for row in points {
+        if let Some(&value) = row.get(channel) {
+            if value.is_finite() {
+                sum += value;
+                count += 1;
+            }
+        }
+    }
+
+    if count == 0 {
+        None
+    } else {
+        Some(ChannelStats {
+            avg: sum / count as f32,
+        })
+    }
+}
+
+fn padded_y_bounds(points: &[Vec<f32>], padding: f64) -> Option<(f64, f64)> {
+    let (mut min_y, mut max_y) = raw_y_bounds(points)?;
+
+    if min_y == max_y {
+        min_y -= 1.0;
+        max_y += 1.0;
+    } else {
+        let diff = max_y - min_y;
+        min_y -= diff * padding;
+        max_y += diff * padding;
+    }
+
+    Some((min_y, max_y))
+}
+
+fn raw_y_bounds(points: &[Vec<f32>]) -> Option<(f64, f64)> {
+    let mut min_y = 0.0f64;
+    let mut max_y = 0.0f64;
+    let mut has_points = false;
+
+    for val_vector in points {
+        for &val in val_vector {
+            if val.is_finite() {
+                let value = val as f64;
+                if has_points {
+                    min_y = min_y.min(value);
+                    max_y = max_y.max(value);
+                } else {
+                    min_y = value;
+                    max_y = value;
+                    has_points = true;
+                }
+            }
+        }
+    }
+
+    has_points.then_some((min_y, max_y))
 }
 
 fn draw_connection_rail(f: &mut Frame, app: &mut App, area: Rect) {
@@ -702,7 +1030,11 @@ fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
 
     console_lines.push(Line::from(vec![
         Span::styled(
-            if lang == "zh" { "接收控制台" } else { "RX Console" },
+            if lang == "zh" {
+                "接收控制台"
+            } else {
+                "RX Console"
+            },
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -720,7 +1052,11 @@ fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
                 .bg(mocha::SURFACE0),
         ),
         Span::styled(
-            if lang == "zh" { "  自动滚动 开启  " } else { "  AutoScroll ON  " },
+            if lang == "zh" {
+                "  自动滚动 开启  "
+            } else {
+                "  AutoScroll ON  "
+            },
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.info)
                 .bg(mocha::SURFACE0),
@@ -758,7 +1094,10 @@ fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(CATPPUCCIN_MOCHA.text),
         ),
         Span::raw("   "),
-        Span::styled(tr("plot_port", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+        Span::styled(
+            tr("plot_port", lang),
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+        ),
         Span::styled(
             selected_port,
             Style::default()
@@ -789,8 +1128,7 @@ fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_port_selector(f: &mut Frame, app: &App, area: Rect) {
-    let mut ports: Vec<String> = app.channels.iter().map(|c| c.port.clone()).collect();
-    ports.push("SIMULATED".to_string());
+    let ports: Vec<String> = app.channels.iter().map(|c| c.port.clone()).collect();
 
     let active_port = app
         .get_selected_port()
@@ -807,20 +1145,8 @@ fn draw_port_selector(f: &mut Frame, app: &App, area: Rect) {
         for port in &ports {
             let is_selected = port == &active_port;
             let line = if is_selected {
-                let status = if port == "SIMULATED" {
-                    if app.simulation_active {
-                        tr("plot_sim_on", lang)
-                    } else {
-                        tr("plot_sim_off", lang)
-                    }
-                } else {
-                    tr("plot_active", lang)
-                };
-                let status_color = if port == "SIMULATED" && !app.simulation_active {
-                    CATPPUCCIN_MOCHA.warning
-                } else {
-                    CATPPUCCIN_MOCHA.success
-                };
+                let status = tr("plot_active", lang);
+                let status_color = CATPPUCCIN_MOCHA.success;
                 Line::from(vec![
                     Span::styled(
                         "> ",
@@ -837,19 +1163,9 @@ fn draw_port_selector(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(status, Style::default().fg(status_color)),
                 ])
             } else {
-                let suffix = if port == "SIMULATED" {
-                    if app.simulation_active {
-                        tr("plot_sim_on", lang)
-                    } else {
-                        tr("plot_sim_off", lang)
-                    }
-                } else {
-                    ""
-                };
                 Line::from(vec![
                     Span::styled("  ", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
                     Span::styled(port, Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-                    Span::styled(suffix, Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
                 ])
             };
             port_lines.push(line);
@@ -875,7 +1191,7 @@ fn draw_port_selector(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_serial_profile(f: &mut Frame, app: &App, area: Rect) {
-    let status_color = if app.simulation_active {
+    let status_color = if app.plotter_active {
         CATPPUCCIN_MOCHA.success
     } else {
         CATPPUCCIN_MOCHA.warning
@@ -888,7 +1204,7 @@ fn draw_serial_profile(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
-                if app.simulation_active {
+                if app.plotter_active {
                     tr("plot_connected", lang)
                 } else {
                     tr("plot_paused", lang)
@@ -917,7 +1233,10 @@ fn draw_serial_profile(f: &mut Frame, app: &App, area: Rect) {
                 tr("plot_flow", lang),
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
-            Span::styled(tr("plot_none", lang), Style::default().fg(CATPPUCCIN_MOCHA.text)),
+            Span::styled(
+                tr("plot_none", lang),
+                Style::default().fg(CATPPUCCIN_MOCHA.text),
+            ),
         ]),
         Line::from(vec![
             Span::styled(
@@ -1041,9 +1360,7 @@ fn draw_telemetry_stats(f: &mut Frame, app: &App, area: Rect) {
     let lang = &app.tool_config.language;
     let stats_table = if rows.is_empty() {
         Table::new(
-            vec![Row::new(vec![Cell::from(
-                tr("plot_waiting_data", lang),
-            )])],
+            vec![Row::new(vec![Cell::from(tr("plot_waiting_data", lang))])],
             [Constraint::Percentage(100)],
         )
     } else {
@@ -1052,16 +1369,14 @@ fn draw_telemetry_stats(f: &mut Frame, app: &App, area: Rect) {
         } else {
             vec!["Channel", "Current", "Min", "Max", "Avg"]
         };
-        let header_cells = headers
-            .into_iter()
-            .map(|h| {
-                Cell::from(Span::styled(
-                    h,
-                    Style::default()
-                        .fg(mocha::SUBTEXT1)
-                        .add_modifier(Modifier::BOLD),
-                ))
-            });
+        let header_cells = headers.into_iter().map(|h| {
+            Cell::from(Span::styled(
+                h,
+                Style::default()
+                    .fg(mocha::SUBTEXT1)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        });
         let header = Row::new(header_cells).style(Style::default().bg(mocha::SURFACE0));
 
         Table::new(
@@ -1120,7 +1435,10 @@ fn draw_send_panel(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(tx_color).add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled(tr("plot_tx_mode", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(
+                tr("plot_tx_mode", lang),
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
             Span::styled(
                 "Text",
                 Style::default()
@@ -1136,10 +1454,16 @@ fn draw_send_panel(f: &mut Frame, app: &App, area: Rect) {
                     .bg(mocha::SURFACE0),
             ),
             Span::raw("  "),
-            Span::styled(tr("plot_tx_eol", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(
+                tr("plot_tx_eol", lang),
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
             Span::styled("\\n", Style::default().fg(CATPPUCCIN_MOCHA.text)),
             Span::raw("  "),
-            Span::styled(tr("plot_port", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(
+                tr("plot_port", lang),
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
             Span::styled(
                 selected_port,
                 Style::default()
@@ -1149,41 +1473,18 @@ fn draw_send_panel(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
-                "> ",
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.accent)
-                    .add_modifier(Modifier::BOLD),
+                tr("plot_tx_quick", lang),
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
-            Span::styled(
-                tr("plot_tx_placeholder", lang),
-                Style::default().fg(CATPPUCCIN_MOCHA.text_disabled),
-            ),
+            quick_button("RESET", app.hover_plotter_quick_command == Some(0)),
             Span::raw(" "),
-            Span::styled(
-                tr("plot_tx_enter_send", lang),
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.success)
-                    .bg(mocha::SURFACE0),
-            ),
+            quick_button("VERSION?", app.hover_plotter_quick_command == Some(1)),
             Span::raw(" "),
-            Span::styled(
-                tr("plot_tx_history_hint", lang),
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.text_muted)
-                    .bg(mocha::SURFACE0),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(tr("plot_tx_quick", lang), Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-            quick_button("RESET"),
+            quick_button("START", app.hover_plotter_quick_command == Some(2)),
             Span::raw(" "),
-            quick_button("VERSION?"),
+            quick_button("STOP", app.hover_plotter_quick_command == Some(3)),
             Span::raw(" "),
-            quick_button("START"),
-            Span::raw(" "),
-            quick_button("STOP"),
-            Span::raw(" "),
-            quick_button("QA PING"),
+            quick_button("QA PING", app.hover_plotter_quick_command == Some(4)),
         ]),
     ];
 
@@ -1206,12 +1507,20 @@ fn draw_send_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(p, area);
 }
 
-fn quick_button<'a>(label: &'a str) -> Span<'a> {
+fn quick_button(label: &str, hovered: bool) -> Span<'_> {
     Span::styled(
         format!("[{}]", label),
         Style::default()
-            .fg(CATPPUCCIN_MOCHA.text)
-            .bg(mocha::SURFACE0)
+            .fg(if hovered {
+                mocha::CRUST
+            } else {
+                CATPPUCCIN_MOCHA.text
+            })
+            .bg(if hovered {
+                CATPPUCCIN_MOCHA.accent
+            } else {
+                mocha::SURFACE0
+            })
             .add_modifier(Modifier::BOLD),
     )
 }

@@ -11,15 +11,16 @@ pub mod translation;
 pub mod utils;
 pub mod widgets;
 
-pub use utils::center_rect;
 pub use translation::tr;
+pub use utils::center_rect;
 
 use crate::app::{ActiveTab, App};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
-    widgets::{Block, Borders, Tabs},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
 };
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -27,7 +28,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
+            Constraint::Length(2), // Header
             Constraint::Min(10),   // Main Area
             Constraint::Length(1), // Footer
         ])
@@ -53,6 +54,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     if app.show_tool_settings {
         let area = center_rect(48, 11, f.size());
+        app.layout_zones.tool_settings_modal = area;
         modal::draw_tool_settings(f, app, area);
     }
 
@@ -85,7 +87,7 @@ fn draw_workspace(f: &mut Frame, app: &mut App, area: Rect) {
     // Vertical split for Tabs Bar and Content
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .constraints([Constraint::Length(2), Constraint::Min(5)])
         .split(area);
 
     // Render Tabs
@@ -106,19 +108,47 @@ fn draw_workspace(f: &mut Frame, app: &mut App, area: Rect) {
         ActiveTab::Configuration => 4,
     };
 
-    let tabs = Tabs::new(tab_titles)
+    let mut tab_spans = Vec::new();
+    for (idx, title) in tab_titles.iter().enumerate() {
+        let is_active = active_index == idx;
+        let is_hovered = app.hover_tab == Some(idx);
+        let style = if is_hovered {
+            Style::default()
+                .fg(if is_active {
+                    theme::mocha::CRUST
+                } else {
+                    theme::CATPPUCCIN_MOCHA.text
+                })
+                .bg(if is_active {
+                    theme::CATPPUCCIN_MOCHA.accent
+                } else {
+                    theme::CATPPUCCIN_MOCHA.selection_bg
+                })
+                .add_modifier(Modifier::BOLD)
+        } else if is_active {
+            Style::default()
+                .fg(theme::CATPPUCCIN_MOCHA.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::CATPPUCCIN_MOCHA.text_muted)
+        };
+
+        tab_spans.push(Span::styled(*title, style));
+        if idx + 1 < tab_titles.len() {
+            tab_spans.push(Span::styled(
+                " | ",
+                Style::default().fg(theme::CATPPUCCIN_MOCHA.border),
+            ));
+        }
+    }
+
+    let tabs = Paragraph::new(Line::from(tab_spans))
         .block(
             Block::default()
                 .borders(Borders::BOTTOM)
                 .border_style(Style::default().fg(theme::CATPPUCCIN_MOCHA.border)),
         )
-        .select(active_index)
-        .style(Style::default().fg(theme::CATPPUCCIN_MOCHA.text_muted))
-        .highlight_style(
-            Style::default()
-                .fg(theme::CATPPUCCIN_MOCHA.accent)
-                .add_modifier(Modifier::BOLD),
-        );
+        .style(Style::default().bg(theme::mocha::MANTLE));
 
     f.render_widget(tabs, chunks[0]);
     app.layout_zones.tabs = chunks[0];

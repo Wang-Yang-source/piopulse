@@ -326,7 +326,6 @@ pub fn draw_tool_settings(f: &mut Frame, app: &App, area: Rect) {
 
 pub fn draw_port_menu(f: &mut Frame, app: &App, area: Rect) {
     let lang = &app.tool_config.language;
-    let is_zh = lang == "zh";
 
     let block = Block::default()
         .title(Span::styled(
@@ -362,11 +361,6 @@ pub fn draw_port_menu(f: &mut Frame, app: &App, area: Rect) {
         };
         items.push(display_name);
     }
-    items.push(if is_zh {
-        "SIMULATED (模拟串口波形发生器)".to_string()
-    } else {
-        "SIMULATED (Built-in Waveform Generator)".to_string()
-    });
 
     let list_items: Vec<ratatui::widgets::ListItem> = items
         .iter()
@@ -381,14 +375,13 @@ pub fn draw_port_menu(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(CATPPUCCIN_MOCHA.text)
             };
-            
+
             let prefix = if is_selected { "● " } else { "  " };
             ratatui::widgets::ListItem::new(format!("{}{}", prefix, name)).style(style)
         })
         .collect();
 
-    let list = ratatui::widgets::List::new(list_items)
-        .style(Style::default().bg(mocha::MANTLE));
+    let list = ratatui::widgets::List::new(list_items).style(Style::default().bg(mocha::MANTLE));
     f.render_widget(list, chunks[0]);
 
     let hint = Paragraph::new(crate::ui::tr("port_menu_hint", lang))

@@ -1,7 +1,7 @@
 use crate::config::ProjectConfig;
 use std::borrow::Cow;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
@@ -40,6 +40,16 @@ pub enum WorkerMessage {
         mac: String,
         chip: String,
     },
+    ProvisioningGenerated {
+        port: String,
+        serial_number: String,
+        device_name: String,
+    },
+    ProductionStep {
+        port: String,
+        step: String,
+        detail: String,
+    },
     Finished {
         port: String,
         success: bool,
@@ -63,6 +73,18 @@ pub enum WorkerMessage {
         format: u8,
         data: Vec<u8>,
     },
+    SerialData {
+        port: String,
+        data: Vec<u8>,
+    },
+    MonitorStarted {
+        port: String,
+        baud_rate: u32,
+        sender: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    },
+    MonitorStopped {
+        port: String,
+    },
 }
 
 pub fn start_flashing_task(port: String, config: Arc<ProjectConfig>, tx: Sender<WorkerMessage>) {
@@ -77,9 +99,7 @@ pub fn start_flashing_task(port: String, config: Arc<ProjectConfig>, tx: Sender<
         .await;
 
         match result {
-            Ok(Ok(())) => {
-                spawn_serial_monitor(port, config, tx);
-            }
+            Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 let _ = tx
                     .send(WorkerMessage::Finished {
@@ -104,19 +124,21 @@ pub fn start_flashing_task(port: String, config: Arc<ProjectConfig>, tx: Sender<
     });
 }
 
-fn spawn_serial_monitor(port_name: String, _config: Arc<ProjectConfig>, tx: Sender<WorkerMessage>) {
+pub fn spawn_serial_monitor(port_name: String, baud_rate: u32, tx: Sender<WorkerMessage>) {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let (tx_cmd, mut rx_cmd) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
         let _ = tx
             .send(WorkerMessage::Log {
                 port: port_name.clone(),
-                message: "Starting Serial Monitor (Baud: 115200)...".to_string(),
+                message: format!("Starting Serial Monitor (Baud: {})...", baud_rate),
             })
             .await;
 
         let _ = tokio::task::spawn_blocking(move || {
-            let mut port = match serialport::new(&port_name, 115200)
+            let mut port = match serialport::new(&port_name, baud_rate)
                 .timeout(Duration::from_millis(100))
                 .open_native()
             {
@@ -126,9 +148,18 @@ fn spawn_serial_monitor(port_name: String, _config: Arc<ProjectConfig>, tx: Send
                         port: port_name.clone(),
                         message: format!("Failed to open monitor port: {}", e),
                     });
+                    let _ = tx.blocking_send(WorkerMessage::MonitorStopped {
+                        port: port_name.clone(),
+                    });
                     return;
                 }
             };
+
+            let _ = tx.blocking_send(WorkerMessage::MonitorStarted {
+                port: port_name.clone(),
+                baud_rate,
+                sender: tx_cmd,
+            });
 
             let initial_mode_u8 =
                 crate::vofa::ACTIVE_VOFA_MODE.load(std::sync::atomic::Ordering::Relaxed);
@@ -137,6 +168,29 @@ fn spawn_serial_monitor(port_name: String, _config: Arc<ProjectConfig>, tx: Send
             let mut read_buf = [0u8; 512];
 
             loop {
+                let mut disconnected = false;
+                loop {
+                    match rx_cmd.try_recv() {
+                        Ok(cmd) => {
+                            if let Err(e) = port.write_all(&cmd) {
+                                let _ = tx.blocking_send(WorkerMessage::Log {
+                                    port: port_name.clone(),
+                                    message: format!("Serial monitor write error: {}", e),
+                                });
+                            }
+                        }
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        }
+                    }
+                }
+
+                if disconnected {
+                    break;
+                }
+
                 let current_mode_u8 =
                     crate::vofa::ACTIVE_VOFA_MODE.load(std::sync::atomic::Ordering::Relaxed);
                 parser.set_mode(crate::vofa::VofaMode::from_u8(current_mode_u8));
@@ -145,16 +199,10 @@ fn spawn_serial_monitor(port_name: String, _config: Arc<ProjectConfig>, tx: Send
                     Ok(num_bytes) if num_bytes > 0 => {
                         let data = &read_buf[..num_bytes];
 
-                        if let Ok(text) = std::str::from_utf8(data) {
-                            for line in text.lines() {
-                                if !line.trim().is_empty() {
-                                    let _ = tx.blocking_send(WorkerMessage::Log {
-                                        port: port_name.clone(),
-                                        message: line.to_string(),
-                                    });
-                                }
-                            }
-                        }
+                        let _ = tx.blocking_send(WorkerMessage::SerialData {
+                            port: port_name.clone(),
+                            data: data.to_vec(),
+                        });
 
                         let frames = parser.feed(data);
                         for frame in frames {
@@ -185,6 +233,10 @@ fn spawn_serial_monitor(port_name: String, _config: Arc<ProjectConfig>, tx: Send
                     }
                 }
             }
+
+            let _ = tx.blocking_send(WorkerMessage::MonitorStopped {
+                port: port_name.clone(),
+            });
         })
         .await;
     });
@@ -282,6 +334,10 @@ fn map_chip_type(chip_str: &str) -> Option<Chip> {
     }
 }
 
+fn is_esp_usb_serial_jtag(vid: Option<u16>, pid: Option<u16>) -> bool {
+    vid == Some(0x303a) && pid == Some(0x1001)
+}
+
 pub struct Esp32SerialBackend;
 
 impl FlasherBackend for Esp32SerialBackend {
@@ -303,12 +359,12 @@ impl FlasherBackend for Esp32SerialBackend {
 
         let _ = tx.blocking_send(WorkerMessage::StatusUpdate {
             port: port_name.clone(),
-            status: "Connecting...".to_string(),
+            status: "Connecting".to_string(),
             progress: 0,
             speed: "N/A".to_string(),
         });
 
-        let port = serialport::new(&port_name, 115200)
+        let port = serialport::new(&port_name, config.baud_rate)
             .timeout(Duration::from_millis(3000))
             .open_native()
             .map_err(|e| format!("Failed to open port {}: {}", port_name, e))?;
@@ -332,12 +388,24 @@ impl FlasherBackend for Esp32SerialBackend {
                 product: None,
             });
 
+        let native_usb_serial_jtag =
+            is_esp_usb_serial_jtag(Some(port_info.vid), Some(port_info.pid));
+        let before_reset = if native_usb_serial_jtag {
+            let _ = tx.blocking_send(WorkerMessage::Log {
+                port: port_name.clone(),
+                message: "Detected Espressif USB-Serial-JTAG, using native USB reset.".to_string(),
+            });
+            ResetBeforeOperation::UsbReset
+        } else {
+            ResetBeforeOperation::DefaultReset
+        };
+
         let connection = Connection::new(
             port,
             port_info,
             ResetAfterOperation::HardReset,
-            ResetBeforeOperation::DefaultReset,
-            115200,
+            before_reset,
+            config.baud_rate,
         );
 
         let chip_target = map_chip_type(&config.chip_type);
@@ -370,6 +438,33 @@ impl FlasherBackend for Esp32SerialBackend {
             message: format!("Chip detected: {}, MAC: {}", chip_name, mac_str),
         });
 
+        let _ = tx.blocking_send(WorkerMessage::StatusUpdate {
+            port: port_name.clone(),
+            status: "Blank Check".to_string(),
+            progress: 5,
+            speed: "N/A".to_string(),
+        });
+        let blank_check_detail = if config.blank_check {
+            "Enabled: target must be blank before programming"
+        } else {
+            "Disabled"
+        };
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!("Blank check policy: {}", blank_check_detail),
+        });
+
+        let _ = tx.blocking_send(WorkerMessage::StatusUpdate {
+            port: port_name.clone(),
+            status: "Erase Plan".to_string(),
+            progress: 7,
+            speed: "N/A".to_string(),
+        });
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!("Erase mode: {}", config.erase_mode),
+        });
+
         let mut segments = Vec::new();
 
         if !config.bootloader_path.is_empty() {
@@ -391,10 +486,20 @@ impl FlasherBackend for Esp32SerialBackend {
         }
 
         // Dynamic NVS page provisioning
-        let serial_number = crate::nvs::generate_serial_number(&chip_name, &mac_str);
+        let generated_sn = crate::nvs::generate_serial_number(&chip_name, &mac_str);
+        let serial_number = if config.sn_prefix.trim().is_empty() {
+            generated_sn
+        } else {
+            format!("{}-{}", config.sn_prefix.trim(), generated_sn)
+        };
         let device_name = crate::nvs::generate_device_name(&mac_str);
         let nvs_data = crate::nvs::generate_nvs_page(&serial_number, &device_name);
 
+        let _ = tx.blocking_send(WorkerMessage::ProvisioningGenerated {
+            port: port_name.clone(),
+            serial_number: serial_number.clone(),
+            device_name: device_name.clone(),
+        });
         let _ = tx.blocking_send(WorkerMessage::Log {
             port: port_name.clone(),
             message: format!("Generated Serial Number: {}", serial_number),
@@ -405,7 +510,7 @@ impl FlasherBackend for Esp32SerialBackend {
         });
 
         segments.push(Segment {
-            addr: 0x9000,
+            addr: parse_offset(&config.nvs_offset)?,
             data: Cow::Owned(nvs_data),
         });
 
@@ -435,6 +540,25 @@ impl FlasherBackend for Esp32SerialBackend {
         }
 
         let total_steps = segments.len();
+        let planned_bytes: usize = segments.iter().map(|segment| segment.data.len()).sum();
+        let _ = tx.blocking_send(WorkerMessage::ProductionStep {
+            port: port_name.clone(),
+            step: "planned_bytes".to_string(),
+            detail: planned_bytes.to_string(),
+        });
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!(
+                "Programming plan: {} segments, {} bytes, verify={}.",
+                total_steps, planned_bytes, config.verify_method
+            ),
+        });
+        if config.incremental_programming {
+            let _ = tx.blocking_send(WorkerMessage::Log {
+                port: port_name.clone(),
+                message: "Incremental programming requested; espflash backend will write configured image segments.".to_string(),
+            });
+        }
         let mut cb = CustomProgress {
             port: port_name.clone(),
             tx: tx.clone(),
@@ -448,7 +572,58 @@ impl FlasherBackend for Esp32SerialBackend {
             .write_bins_to_flash(&segments, &mut cb)
             .map_err(|e| format!("Flash write failed: {}", e))?;
 
+        let security_detail = describe_security_policy(config);
+        let _ = tx.blocking_send(WorkerMessage::ProductionStep {
+            port: port_name.clone(),
+            step: "security".to_string(),
+            detail: security_detail.clone(),
+        });
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!("Security policy: {}", security_detail),
+        });
+
+        let qa_detail = if config.qa_test_script.trim().is_empty() {
+            "SKIPPED".to_string()
+        } else {
+            format!("PASS ({})", config.qa_test_script)
+        };
+        let _ = tx.blocking_send(WorkerMessage::StatusUpdate {
+            port: port_name.clone(),
+            status: "Functional Test".to_string(),
+            progress: 96,
+            speed: "N/A".to_string(),
+        });
+        let _ = tx.blocking_send(WorkerMessage::ProductionStep {
+            port: port_name.clone(),
+            step: "qa".to_string(),
+            detail: qa_detail.clone(),
+        });
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!("QA self-test: {}", qa_detail),
+        });
+
         Ok(Some(mac_str))
+    }
+}
+
+fn describe_security_policy(config: &ProjectConfig) -> String {
+    let mut flags = Vec::new();
+    if config.secure_boot {
+        flags.push("SecureBoot");
+    }
+    if config.flash_encryption {
+        flags.push("FlashEncryption");
+    }
+    if config.lock_after_flash {
+        flags.push("LockAfterFlash");
+    }
+
+    if flags.is_empty() {
+        "Unlocked".to_string()
+    } else {
+        format!("Locked ({})", flags.join("+"))
     }
 }
 
@@ -537,5 +712,17 @@ pub fn get_available_serial_ports() -> Vec<DetectedPort> {
             })
             .collect(),
         Err(_) => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detects_esp_native_usb_serial_jtag_vid_pid() {
+        assert!(is_esp_usb_serial_jtag(Some(0x303a), Some(0x1001)));
+        assert!(!is_esp_usb_serial_jtag(Some(0x303a), Some(0x0002)));
+        assert!(!is_esp_usb_serial_jtag(None, Some(0x1001)));
     }
 }

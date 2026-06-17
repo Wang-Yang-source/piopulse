@@ -76,6 +76,25 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         ]);
     }
 
+    if app.active_tab == crate::app::ActiveTab::Serial {
+        footer_spans.extend([
+            Span::styled(
+                "p",
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if lang == "zh" {
+                    "切换端口 "
+                } else {
+                    "Switch Port "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+        ]);
+    }
+
     footer_spans.extend([
         Span::styled(
             "c",

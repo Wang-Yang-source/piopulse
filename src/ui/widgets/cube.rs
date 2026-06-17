@@ -59,9 +59,17 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
 
     let is_zh = app.tool_config.language == "zh";
     let title_suffix = if app.manual_imu_override {
-        if is_zh { " [手动模式 🎮] " } else { " [MANUAL 🎮] " }
+        if is_zh {
+            " [手动模式 🎮] "
+        } else {
+            " [MANUAL 🎮] "
+        }
     } else {
-        if is_zh { " [传感器遥测 ⚡] " } else { " [TELEMETRY ⚡] " }
+        if is_zh {
+            " [传感器遥测 ⚡] "
+        } else {
+            " [TELEMETRY ⚡] "
+        }
     };
     let border_color = if is_focused {
         CATPPUCCIN_MOCHA.border_focus
