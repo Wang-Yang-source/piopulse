@@ -430,7 +430,11 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let crlf_check = if app.serial_add_newline { "[X]" } else { "[ ]" };
     let rx_hex = if app.serial_hex_mode_rx { "[X]" } else { "[ ]" };
     let tx_hex = if app.serial_hex_mode_tx { "[X]" } else { "[ ]" };
-    let auto_reply_check = if app.serial_auto_reply_enabled { "[X]" } else { "[ ]" };
+    let auto_reply_check = if app.serial_auto_reply_enabled {
+        "[X]"
+    } else {
+        "[ ]"
+    };
     let recording = if app.serial_recording { "[X]" } else { "[ ]" };
     let replaying = if app.serial_playback_active {
         "[X]"
@@ -485,7 +489,11 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
             false,
             option_cell_style(4),
             auto_reply_check,
-            if lang == "zh" { "自动回复" } else { "Auto-Reply" },
+            if lang == "zh" {
+                "自动回复"
+            } else {
+                "Auto-Reply"
+            },
             "a",
             false,
             option_cell_style(5),

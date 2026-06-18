@@ -48,28 +48,53 @@ fn restore_terminal() {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command line arguments
     let args: Vec<String> = std::env::args().collect();
+    let mut external_platformio_ini: Option<std::path::PathBuf> = None;
     if args.len() > 1 {
-        match args[1].as_str() {
-            "--version" | "-v" | "version" => {
-                println!("piopulse {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
+        let mut idx = 1;
+        while idx < args.len() {
+            match args[idx].as_str() {
+                "--version" | "-v" | "version" => {
+                    println!("piopulse {}", env!("CARGO_PKG_VERSION"));
+                    return Ok(());
+                }
+                "--help" | "-h" | "help" => {
+                    println!("PioPulse - ESP32 Factory Flashing TUI Tool");
+                    println!();
+                    println!("Usage:");
+                    println!("  piopulse [options]");
+                    println!();
+                    println!("Options:");
+                    println!("  -h, --help     Show this help message");
+                    println!("  -v, --version  Show version information");
+                    println!(
+                        "  --platformio-ini <file>  Use an external platformio.ini for this source directory"
+                    );
+                    return Ok(());
+                }
+                "--platformio-ini" | "--pio-ini" => {
+                    idx += 1;
+                    if idx >= args.len() {
+                        eprintln!("Error: --platformio-ini requires a file path.");
+                        std::process::exit(1);
+                    }
+                    external_platformio_ini = Some(std::path::PathBuf::from(&args[idx]));
+                }
+                _ => {
+                    let path = std::path::PathBuf::from(&args[idx]);
+                    if path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name == "platformio.ini")
+                    {
+                        external_platformio_ini = Some(path);
+                    } else {
+                        eprintln!("Error: Unknown argument '{}'", args[idx]);
+                        eprintln!("Run 'piopulse --help' for usage details.");
+                        std::process::exit(1);
+                    }
+                }
             }
-            "--help" | "-h" | "help" => {
-                println!("PioPulse - ESP32 Factory Flashing TUI Tool");
-                println!();
-                println!("Usage:");
-                println!("  piopulse [options]");
-                println!();
-                println!("Options:");
-                println!("  -h, --help     Show this help message");
-                println!("  -v, --version  Show version information");
-                return Ok(());
-            }
-            _ => {
-                eprintln!("Error: Unknown argument '{}'", args[1]);
-                eprintln!("Run 'piopulse --help' for usage details.");
-                std::process::exit(1);
-            }
+            idx += 1;
         }
     }
     // Setup panic hook to restore terminal
@@ -85,24 +110,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app
-    let config_path = "project_config.json".to_string();
-    let mut app = App::new(config_path);
+    // Create app on a blocking worker so the terminal can show startup progress immediately.
+    let config_path = "factory/piopulse.toml".to_string();
+    let startup_lang = config::ToolConfig::load().language;
+    let startup_started = std::time::Instant::now();
+    let config_path_for_startup = config_path.clone();
+    let mut startup_task = tokio::task::spawn_blocking(move || {
+        let mut app = match external_platformio_ini {
+            Some(pio_ini) => App::new_with_platformio_ini(config_path_for_startup, Some(pio_ini)),
+            None => App::new(config_path_for_startup),
+        };
+        app.scan_ports(None);
+        app
+    });
 
-    // Initial port scan
-    app.scan_ports(None);
+    // Setup input events stream, signal handling & ticks
+    let mut reader = EventStream::new();
+    let shutdown_signal = shutdown_signal();
+    tokio::pin!(shutdown_signal);
+    let mut startup_interval = tokio::time::interval(Duration::from_millis(100));
+
+    let mut app = loop {
+        terminal.draw(|f| ui::draw_startup_screen(f, &startup_lang, startup_started.elapsed()))?;
+
+        tokio::select! {
+            app_result = &mut startup_task => {
+                match app_result {
+                    Ok(app) => break app,
+                    Err(err) => {
+                        restore_terminal();
+                        return Err(Box::new(err) as Box<dyn std::error::Error>);
+                    }
+                }
+            }
+            signal_result = &mut shutdown_signal => {
+                signal_result?;
+                restore_terminal();
+                std::process::exit(0);
+            }
+            _ = startup_interval.tick() => {}
+            maybe_event = reader.next() => {
+                if let Some(Ok(Event::Key(key))) = maybe_event {
+                    if key.kind == KeyEventKind::Press
+                        && key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        restore_terminal();
+                        std::process::exit(0);
+                    }
+                }
+            }
+        }
+    };
 
     // Create channel for worker messages
     let (tx, mut rx) = mpsc::channel(100);
     app.worker_tx = Some(tx.clone());
 
-    // Setup input events stream & ticks
-    let mut reader = EventStream::new();
     let mut interval = tokio::time::interval(Duration::from_millis(100));
-
     let mut exit = false;
-    let shutdown_signal = shutdown_signal();
-    tokio::pin!(shutdown_signal);
 
     while !exit {
         terminal.draw(|f| ui::draw(f, &mut app))?;
@@ -127,6 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Scan ports automatically every 2 seconds
                 if app.last_port_scan.elapsed() > Duration::from_secs(2) {
                     app.scan_ports(Some(tx.clone()));
+                    app.update_auto_flash_sensing(tx.clone());
                     app.last_port_scan = std::time::Instant::now();
                 }
             }
@@ -458,11 +525,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                              app.show_exit_menu = true;
                                              app.exit_menu_selected = 1;
                                          }
-                                        KeyCode::Char('1') => app.active_tab = ActiveTab::Serial,
-                                        KeyCode::Char('2') => app.active_tab = ActiveTab::Plotter,
-                                        KeyCode::Char('3') => app.active_tab = ActiveTab::Widgets,
-                                        KeyCode::Char('4') => app.active_tab = ActiveTab::Flasher,
-                                        KeyCode::Char('5') => app.active_tab = ActiveTab::Configuration,
+                                        KeyCode::Char('1') => {
+                                            app.active_tab = ActiveTab::Serial;
+                                            app.log("Switched to Serial tab.");
+                                        }
+                                        KeyCode::Char('2') => {
+                                            app.active_tab = ActiveTab::Plotter;
+                                            app.log("Switched to Plotter tab.");
+                                        }
+                                        KeyCode::Char('3') => {
+                                            app.active_tab = ActiveTab::Widgets;
+                                            app.log("Switched to Widgets tab.");
+                                        }
+                                        KeyCode::Char('4') => {
+                                            app.active_tab = ActiveTab::Flasher;
+                                            app.log("Switched to Flasher tab.");
+                                        }
+                                        KeyCode::Char('5') => {
+                                            app.active_tab = ActiveTab::Configuration;
+                                            app.log("Switched to Configuration tab.");
+                                        }
 
                                         KeyCode::Char('p') | KeyCode::Char('P') => {
                                             if app.active_tab == ActiveTab::Serial {
@@ -476,6 +558,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                  app.is_adding_widget = true;
                                                  app.widget_search_input.clear();
                                                  app.add_menu_selected = 0;
+                                                 app.log("Widget catalog opened.");
                                              } else if app.active_tab == ActiveTab::Flasher {
                                                  app.auto_flash = !app.auto_flash;
                                                  app.log(format!("Auto-Flash mode: {}", if app.auto_flash { "ENABLED" } else { "DISABLED" }));
@@ -488,6 +571,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                      app.auto_reply_focused_field = 0;
                                                  }
                                                  app.log(format!("Auto Reply: {}", if app.serial_auto_reply_enabled { "ENABLED" } else { "DISABLED" }));
+                                             } else {
+                                                 app.log("Shortcut A is available on Flasher (auto-flash), Serial (auto-reply), or Widgets (add).");
                                              }
                                          }
                                          KeyCode::Char('d') | KeyCode::Char('D') => {
@@ -495,6 +580,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                  app.delete_selected_widget();
                                              } else if app.active_tab == ActiveTab::Serial {
                                                  app.toggle_dtr();
+                                             } else {
+                                                 app.log("Shortcut D is available on Widgets (delete) or Serial (DTR).");
                                              }
                                          }
                                          KeyCode::Char('g') | KeyCode::Char('G') => {
@@ -592,6 +679,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.stats.total_failed = 0;
                                                 app.stats.total_attempted = 0;
                                                 app.log("Production counters cleared.");
+                                            } else {
+                                                app.log("Cannot clear production counters while flashing is active.");
                                             }
                                         }
                                         KeyCode::Char('s') | KeyCode::Char('S') => {
@@ -607,9 +696,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             if app.active_tab == ActiveTab::Serial {
                                                 app.show_custom_baud_modal = true;
                                                 app.custom_baud_input = app.serial_baud_rate.to_string();
+                                                app.log("Custom baud dialog opened.");
                                             } else if app.active_tab == ActiveTab::Flasher {
                                                 app.flash_batch_mode = !app.flash_batch_mode;
                                                 app.log(format!("Flash Mode set to: {}", if app.flash_batch_mode { "BATCH" } else { "SINGLE" }));
+                                            } else {
+                                                app.log("Shortcut B is available on Flasher (batch/single) or Serial (baud).");
                                             }
                                         }
                                         KeyCode::Char('f') | KeyCode::Char('F') => {
@@ -641,6 +733,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.cycle_vofa_mode();
                                              } else if app.active_tab == ActiveTab::Flasher {
                                                  app.toggle_merged_flash();
+                                            } else {
+                                                app.log("Shortcut M is available on Serial (monitor), Plotter (VOFA), or Flasher (merged mode).");
                                             }
                                         }
                                         KeyCode::Char('+') | KeyCode::Char('=') => {
@@ -757,6 +851,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.lock_admin();
                                             } else {
                                                 app.is_entering_password = true;
+                                                app.log("Admin unlock prompt opened.");
                                             }
                                         }
                                         KeyCode::F(2) => {
@@ -777,6 +872,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.start_flashing(tx.clone());
                                             } else if app.active_tab == ActiveTab::Serial {
                                                 app.serial_is_typing = true;
+                                                app.log("Serial typing mode opened.");
+                                            } else if app.active_tab == ActiveTab::Widgets {
+                                                if app.dashboard_widgets.is_empty() {
+                                                    app.log("No widgets loaded. Press A to add a widget.");
+                                                } else {
+                                                    app.selected_widget_idx =
+                                                        (app.selected_widget_idx + 1) % app.dashboard_widgets.len();
+                                                    app.log(format!(
+                                                        "Focused widget {} of {}.",
+                                                        app.selected_widget_idx + 1,
+                                                        app.dashboard_widgets.len()
+                                                    ));
+                                                }
                                             }
                                         }
                                         KeyCode::Up => {

@@ -213,6 +213,80 @@ PioPulse 的主界面分为 5 个 TUI 页签：
 - 标签模板
 - QA 测试脚本
 
+## 默认烧录包
+
+烧录时优先读取当前目录的 `piopulse.toml`。如果没有这个文件，会继续查找 `factory/piopulse.toml`；如果 `factory/` 目录里只有标准命名的 bin 文件，也会自动生成默认分段清单。
+
+推荐的产线包结构：
+
+```text
+factory/
+  piopulse.toml
+  bootloader.bin
+  partitions.bin
+  boot_app0.bin
+  firmware.bin
+  factory_merged.bin
+```
+
+推荐的 `piopulse.toml`：
+
+```toml
+name = "PixelPad ESP32-S3 Production"
+chip_type = "ESP32-S3"
+baud_rate = 921600
+flash_mode = "dio"
+flash_freq = "80m"
+flash_size = "16MB"
+do_not_chg_bin = true
+nvs_offset = "0x9000"
+verify_method = "ReadBack+SHA256"
+use_merged_flash = false
+merged_offset = "0x0000"
+
+# 这里描述烧录包自身是否已经预加密。默认 generated factory 包是明文 bin。
+# disabled: 明文镜像；device_runtime: 设备侧 flash encryption 策略意图；pre_encrypted: 文件已预加密。
+flash_encryption = false
+flash_encryption_mode = "disabled"
+secure_boot = false
+lock_after_flash = false
+
+[[images]]
+label = "bootloader"
+path = "bootloader.bin"
+offset = "0x0000"
+required = true
+encrypted = false
+
+[[images]]
+label = "partitions"
+path = "partitions.bin"
+offset = "0x8000"
+required = true
+encrypted = false
+
+[[images]]
+label = "boot_app0"
+path = "boot_app0.bin"
+offset = "0xe000"
+required = true
+encrypted = false
+
+[[images]]
+label = "firmware"
+path = "firmware.bin"
+offset = "0x10000"
+required = true
+encrypted = false
+
+[[images]]
+label = "factory_merged"
+path = "factory_merged.bin"
+offset = "0x0000"
+required = true
+encrypted = false
+```
+
 常用操作：
 
 - `F1`：进入或退出管理员模式

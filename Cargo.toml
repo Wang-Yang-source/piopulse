@@ -1,6 +1,6 @@
 [package]
 name = "piopulse"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 description = "A terminal user interface (TUI) embedded debugger for serial debugging, telemetry plotting, dashboards, and ESP32 flashing."
 license = "MIT"
@@ -17,6 +17,7 @@ serialport = "4.3.0"
 rand = "0.8.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+toml = "1.1.2"
 chrono = "0.4"
 futures = "0.3"
 espflash = { version = "4.4.0", default-features = false, features = ["serialport"] }

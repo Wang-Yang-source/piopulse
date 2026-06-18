@@ -1,8 +1,7 @@
 use crate::app::{App, Channel};
+use crate::config::ImageValidationResult;
 use crate::ui::theme::{CATPPUCCIN_MOCHA, mocha};
 use crate::ui::tr;
-use crate::config::ImageValidationResult;
-use std::path::Path;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -10,11 +9,12 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
+use std::path::Path;
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let main_area = area;
     app.layout_zones.flash_device_table = main_area;
-    
+
     if app.channels.is_empty() {
         draw_empty_state(f, app, main_area);
     } else {
@@ -266,8 +266,6 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
         ),
     ])];
 
-
-
     summary_lines.push(Line::from(vec![
         Span::styled(
             if lang == "zh" {
@@ -381,6 +379,10 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
                     "Blank Check" => "空片检查",
                     "Erase Plan" => "擦除规划",
                     "Functional Test" => "功能测试",
+                    "Auto sensing" => "自动感应",
+                    "Auto detected" => "检测到产品",
+                    "Waiting for product" => "等待产品",
+                    "Remove flashed board" => "请取下已烧录板",
                     s => s,
                 }
             } else {
@@ -544,7 +546,6 @@ fn make_progress_bar(pct: u8, width: usize) -> String {
     format!("[{}{}] {:>3}%", "=".repeat(filled), " ".repeat(empty), pct)
 }
 
-
 fn flash_table_title(lang: &str, scroll: usize, visible_rows: usize, total: usize) -> String {
     let base = tr("flash_devices_title", lang);
     if total > visible_rows && visible_rows > 0 {
@@ -693,12 +694,10 @@ fn draw_empty_state_left(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                tr("flash_connect_usb", lang),
-                Style::default().fg(CATPPUCCIN_MOCHA.text_disabled),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            tr("flash_connect_usb", lang),
+            Style::default().fg(CATPPUCCIN_MOCHA.text_disabled),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::styled(
@@ -728,7 +727,11 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
         .title(Span::styled(
-            if lang == "zh" { " 引导烧录清单与校验 " } else { " Guided Burning Manifest " },
+            if lang == "zh" {
+                " 引导烧录清单与校验 "
+            } else {
+                " Guided Burning Manifest "
+            },
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.text)
                 .add_modifier(Modifier::BOLD),
@@ -752,69 +755,101 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .split(inner_area);
 
     // Mode Selector & DoNotChgBin Status
-    let has_segmented = app.config.images.iter().any(|img| img.label != "merged" && img.label != "factory_merged" && !img.path.ends_with("merged.bin"));
-    let has_merged = app.config.images.iter().any(|img| img.label == "merged" || img.label == "factory_merged" || img.path.ends_with("merged.bin"));
+    let has_segmented = app.config.images.iter().any(|img| {
+        img.label != "merged" && img.label != "factory_merged" && !img.path.ends_with("merged.bin")
+    });
+    let has_merged = app.config.images.iter().any(|img| {
+        img.label == "merged" || img.label == "factory_merged" || img.path.ends_with("merged.bin")
+    });
     let both_available = has_segmented && has_merged;
 
     let mode_str = if app.use_merged_flash {
-        if lang == "zh" { "合并包烧录 (Merged Bin)" } else { "Merged-Bin Flashing" }
+        if lang == "zh" {
+            "合并包烧录 (Merged Bin)"
+        } else {
+            "Merged-Bin Flashing"
+        }
     } else {
-        if lang == "zh" { "分段烧录 (Segmented)" } else { "Segmented Flashing" }
+        if lang == "zh" {
+            "分段烧录 (Segmented)"
+        } else {
+            "Segmented Flashing"
+        }
     };
 
-    let mode_line = if both_available {
-        Line::from(vec![
-            Span::styled(
-                if lang == "zh" { " 烧录模式: " } else { " Mode: " },
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted)
-            ),
-            Span::styled(
-                format!("◀ {} ▶", mode_str),
-                Style::default().fg(CATPPUCCIN_MOCHA.accent).add_modifier(Modifier::BOLD)
-            ),
-            Span::styled(
-                if lang == "zh" { " [按M或点击切换]" } else { " [Press M/Click]" },
-                Style::default().fg(CATPPUCCIN_MOCHA.text_disabled)
-            ),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled(
-                if lang == "zh" { " 烧录模式: " } else { " Mode: " },
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted)
-            ),
-            Span::styled(
-                mode_str,
-                Style::default().fg(CATPPUCCIN_MOCHA.primary).add_modifier(Modifier::BOLD)
-            ),
-        ])
-    };
+    let mode_line = Line::from(vec![
+        Span::styled(
+            if lang == "zh" {
+                " 烧录模式: "
+            } else {
+                " Mode: "
+            },
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+        ),
+        Span::styled(
+            format!("◀ {} ▶", mode_str),
+            Style::default()
+                .fg(if both_available {
+                    CATPPUCCIN_MOCHA.accent
+                } else {
+                    CATPPUCCIN_MOCHA.primary
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if lang == "zh" {
+                " [点击切换]"
+            } else {
+                " [Click to toggle]"
+            },
+            Style::default().fg(CATPPUCCIN_MOCHA.text_disabled),
+        ),
+    ]);
 
-    app.layout_zones.flash_mode_toggle = Rect::new(
+    app.layout_zones.flash_mode_toggle = Rect::new(chunks[0].x, chunks[0].y, chunks[0].width, 1);
+    app.layout_zones.flash_donotchg_toggle = Rect::new(
         chunks[0].x,
-        chunks[0].y,
+        chunks[0].y.saturating_add(1),
         chunks[0].width,
-        1
+        1,
     );
 
-    let donotchg_str = if app.config.do_not_chg_bin { "TRUE" } else { "FALSE" };
-    let donotchg_color = if app.config.do_not_chg_bin { CATPPUCCIN_MOCHA.success } else { CATPPUCCIN_MOCHA.text_muted };
+    let donotchg_str = if app.config.do_not_chg_bin {
+        "TRUE"
+    } else {
+        "FALSE"
+    };
+    let donotchg_color = if app.config.do_not_chg_bin {
+        CATPPUCCIN_MOCHA.success
+    } else {
+        CATPPUCCIN_MOCHA.text_muted
+    };
     let donotchg_line = Line::from(vec![
         Span::styled(
             " DoNotChgBin: ",
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted)
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
         ),
         Span::styled(
             donotchg_str,
-            Style::default().fg(donotchg_color).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(donotchg_color)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             if app.config.do_not_chg_bin {
-                if lang == "zh" { " (不修改 Bin 头)" } else { " (No header mutation)" }
+                if lang == "zh" {
+                    " (不修改 Bin 头，点击切换)"
+                } else {
+                    " (No header mutation, click to toggle)"
+                }
             } else {
-                if lang == "zh" { " (根据配置修改 Bin 头)" } else { " (Headers will be modified)" }
+                if lang == "zh" {
+                    " (根据配置修改 Bin 头，点击切换)"
+                } else {
+                    " (Headers will be modified, click to toggle)"
+                }
             },
-            Style::default().fg(CATPPUCCIN_MOCHA.text_disabled)
+            Style::default().fg(CATPPUCCIN_MOCHA.text_disabled),
         ),
     ]);
 
@@ -834,17 +869,22 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     // Filter image results for current mode
-    let filtered_results: Vec<&ImageValidationResult> = image_results.iter().filter(|res| {
-        let is_merged = res.label.contains("merged") || res.path.ends_with("factory_merged.bin") || res.path.ends_with("merged.bin");
-        app.use_merged_flash == is_merged
-    }).collect();
+    let filtered_results: Vec<&ImageValidationResult> = image_results
+        .iter()
+        .filter(|res| {
+            let is_merged = res.label.contains("merged")
+                || res.path.ends_with("factory_merged.bin")
+                || res.path.ends_with("merged.bin");
+            app.use_merged_flash == is_merged
+        })
+        .collect();
 
     for res in &filtered_results {
         let filename = Path::new(&res.path)
             .file_name()
             .and_then(|f| f.to_str())
             .unwrap_or(&res.path);
-        
+
         let size_str = match res.size_bytes {
             Some(sz) => format_bytes(sz as usize),
             None => "-".to_string(),
@@ -853,45 +893,69 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
         let sha_span = match res.sha256_match {
             Some(true) => Span::styled(
                 if lang == "zh" { "匹配" } else { "MATCH" },
-                Style::default().fg(CATPPUCCIN_MOCHA.success).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.success)
+                    .add_modifier(Modifier::BOLD),
             ),
             Some(false) => Span::styled(
-                if lang == "zh" { "不匹配" } else { "MISMATCH" },
-                Style::default().fg(CATPPUCCIN_MOCHA.danger).add_modifier(Modifier::BOLD)
+                if lang == "zh" {
+                    "不匹配"
+                } else {
+                    "MISMATCH"
+                },
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.danger)
+                    .add_modifier(Modifier::BOLD),
             ),
-            None => Span::styled(
-                "N/A",
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted)
-            ),
+            None => Span::styled("N/A", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
         };
 
         let status_span = if res.exists {
             Span::styled(
                 if lang == "zh" { "正常" } else { "OK" },
-                Style::default().fg(CATPPUCCIN_MOCHA.success)
+                Style::default().fg(CATPPUCCIN_MOCHA.success),
             )
         } else {
-            let is_req = app.config.images.iter().find(|i| i.label == res.label).map(|i| i.required).unwrap_or(true);
+            let is_req = app
+                .config
+                .images
+                .iter()
+                .find(|i| i.label == res.label)
+                .map(|i| i.required)
+                .unwrap_or(true);
             if is_req {
                 Span::styled(
-                    if lang == "zh" { "缺失 (必选)" } else { "MISSING" },
-                    Style::default().fg(CATPPUCCIN_MOCHA.danger).add_modifier(Modifier::BOLD)
+                    if lang == "zh" {
+                        "缺失 (必选)"
+                    } else {
+                        "MISSING"
+                    },
+                    Style::default()
+                        .fg(CATPPUCCIN_MOCHA.danger)
+                        .add_modifier(Modifier::BOLD),
                 )
             } else {
                 Span::styled(
-                    if lang == "zh" { "未找到 (可选)" } else { "OPTIONAL" },
-                    Style::default().fg(CATPPUCCIN_MOCHA.text_muted)
+                    if lang == "zh" {
+                        "未找到 (可选)"
+                    } else {
+                        "OPTIONAL"
+                    },
+                    Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
                 )
             }
         };
 
-        rows.push(Row::new(vec![
-            Cell::from(Span::raw(res.offset.clone())),
-            Cell::from(Span::raw(filename.to_string())),
-            Cell::from(Span::raw(size_str)),
-            Cell::from(sha_span),
-            Cell::from(status_span),
-        ]).style(Style::default().bg(mocha::BASE)));
+        rows.push(
+            Row::new(vec![
+                Cell::from(Span::raw(res.offset.clone())),
+                Cell::from(Span::raw(filename.to_string())),
+                Cell::from(Span::raw(size_str)),
+                Cell::from(sha_span),
+                Cell::from(status_span),
+            ])
+            .style(Style::default().bg(mocha::BASE)),
+        );
     }
 
     let widths = [
@@ -918,18 +982,29 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // Validation Status at bottom
     // Filter validation errors to only show relevant ones based on current mode
     // (e.g. if we are in merged mode, missing segmented files shouldn't block)
-    let filtered_errors: Vec<String> = validation_errors.into_iter().filter(|err| {
-        if app.use_merged_flash {
-            // Merged mode: ignore errors about bootloader/partitions/firmware/otadata segmented files missing
-            !err.contains("bootloader") && !err.contains("partitions") && !err.contains("boot_app0") && !err.contains("firmware") && !err.contains("Required image")
-        } else {
-            // Segmented mode: ignore errors about merged files missing
-            !err.contains("merged")
-        }
-    }).collect();
+    let filtered_errors: Vec<String> = validation_errors
+        .into_iter()
+        .filter(|err| {
+            if app.use_merged_flash {
+                // Merged mode: ignore errors about bootloader/partitions/firmware/otadata segmented files missing
+                !err.contains("bootloader")
+                    && !err.contains("partitions")
+                    && !err.contains("boot_app0")
+                    && !err.contains("firmware")
+                    && !err.contains("Required image")
+            } else {
+                // Segmented mode: ignore errors about merged files missing
+                !err.contains("merged")
+            }
+        })
+        .collect();
 
     let status_widget = if filtered_errors.is_empty() {
-        let text = if lang == "zh" { " 就绪: 所有固件校验通过，可安全烧录 " } else { " READY: All binaries verified, ready to flash " };
+        let text = if lang == "zh" {
+            " 就绪: 所有固件校验通过，可安全烧录 "
+        } else {
+            " READY: All binaries verified, ready to flash "
+        };
         Paragraph::new(text)
             .alignment(ratatui::layout::Alignment::Center)
             .block(
@@ -937,9 +1012,13 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(CATPPUCCIN_MOCHA.success))
-                    .style(Style::default().bg(mocha::SURFACE0))
+                    .style(Style::default().bg(mocha::SURFACE0)),
             )
-            .style(Style::default().fg(CATPPUCCIN_MOCHA.success).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.success)
+                    .add_modifier(Modifier::BOLD),
+            )
     } else {
         let err_text = filtered_errors.join(" | ");
         Paragraph::new(err_text)
@@ -950,9 +1029,13 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(CATPPUCCIN_MOCHA.danger))
-                    .style(Style::default().bg(mocha::SURFACE0))
+                    .style(Style::default().bg(mocha::SURFACE0)),
             )
-            .style(Style::default().fg(CATPPUCCIN_MOCHA.danger).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.danger)
+                    .add_modifier(Modifier::BOLD),
+            )
     };
 
     f.render_widget(status_widget, chunks[2]);

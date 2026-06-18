@@ -72,10 +72,21 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
 
     let mut stats_text = vec![
         Line::from(vec![
-            Span::styled(attempt_label, Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-            Span::styled(total_str, Style::default().fg(CATPPUCCIN_MOCHA.text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                attempt_label,
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(
+                total_str,
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" ".repeat(pad1.max(2))),
-            Span::styled(yield_label, Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(
+                yield_label,
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
             Span::styled(
                 yield_str,
                 Style::default()
@@ -88,14 +99,33 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
             ),
         ]),
         Line::from(vec![
-            Span::styled(passed_label, Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-            Span::styled(passed_str, Style::default().fg(CATPPUCCIN_MOCHA.success).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                passed_label,
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(
+                passed_str,
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" ".repeat(pad2.max(2))),
-            Span::styled(failed_label, Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
-            Span::styled(failed_str, Style::default().fg(CATPPUCCIN_MOCHA.danger).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                failed_label,
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(
+                failed_str,
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.danger)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
-            Span::styled(elapsed_label_str, Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
+            Span::styled(
+                elapsed_label_str,
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
             Span::styled(elapsed_str, Style::default().fg(CATPPUCCIN_MOCHA.text)),
         ]),
     ];
@@ -129,14 +159,34 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
     let rects = app.get_flash_summary_button_rects();
 
     // Set up button labels
-    let b0_label = if lang == "zh" { "开始烧录" } else { "Start Flash" };
-    let b1_label = if app.flash_batch_mode {
-        if lang == "zh" { "模式: 批量" } else { "Mode: Batch" }
+    let b0_label = if lang == "zh" {
+        "开始烧录"
     } else {
-        if lang == "zh" { "模式: 单台" } else { "Mode: Single" }
+        "Start Flash"
     };
-    let b2_label = if lang == "zh" { "自动感应" } else { "Auto Flash" };
-    let b3_label = if lang == "zh" { "清空累计" } else { "Clear Stats" };
+    let b1_label = if app.flash_batch_mode {
+        if lang == "zh" {
+            "模式: 批量"
+        } else {
+            "Mode: Batch"
+        }
+    } else {
+        if lang == "zh" {
+            "模式: 单台"
+        } else {
+            "Mode: Single"
+        }
+    };
+    let b2_label = if lang == "zh" {
+        "自动感应"
+    } else {
+        "Auto Flash"
+    };
+    let b3_label = if lang == "zh" {
+        "清空累计"
+    } else {
+        "Clear Stats"
+    };
 
     // Button colors
     let b0_color = CATPPUCCIN_MOCHA.primary;
@@ -149,38 +199,73 @@ fn draw_stats(f: &mut Frame, app: &App, area: Rect) {
     let b3_color = CATPPUCCIN_MOCHA.danger;
 
     // Helper closure to render buttons
-    let render_btn = |f: &mut Frame, rect: Rect, label: &str, is_hovered: bool, color: ratatui::style::Color| {
-        let text = if is_hovered {
-            let pad_w = (rect.width as usize).saturating_sub(unicode_width::UnicodeWidthStr::width(label));
-            let pad_left = pad_w / 2;
-            let pad_right = pad_w - pad_left;
-            let padded_label = format!("{}{}{}", " ".repeat(pad_left), label, " ".repeat(pad_right));
-            Line::from(vec![
-                Span::styled(padded_label, Style::default().fg(mocha::BASE).bg(color).add_modifier(Modifier::BOLD)),
-            ])
-        } else {
-            let content_w = (rect.width as usize).saturating_sub(4);
-            let label_w = unicode_width::UnicodeWidthStr::width(label);
-            let pad_w = content_w.saturating_sub(label_w);
-            let pad_left = pad_w / 2;
-            let pad_right = pad_w - pad_left;
-            let padded_label = format!("{}{}{}", " ".repeat(pad_left), label, " ".repeat(pad_right));
-            Line::from(vec![
-                Span::styled("[ ", Style::default().fg(CATPPUCCIN_MOCHA.border)),
-                Span::styled(padded_label, Style::default().fg(color).add_modifier(Modifier::BOLD)),
-                Span::styled(" ]", Style::default().fg(CATPPUCCIN_MOCHA.border)),
-            ])
+    let render_btn =
+        |f: &mut Frame, rect: Rect, label: &str, is_hovered: bool, color: ratatui::style::Color| {
+            let text = if is_hovered {
+                let pad_w = (rect.width as usize)
+                    .saturating_sub(unicode_width::UnicodeWidthStr::width(label));
+                let pad_left = pad_w / 2;
+                let pad_right = pad_w - pad_left;
+                let padded_label =
+                    format!("{}{}{}", " ".repeat(pad_left), label, " ".repeat(pad_right));
+                Line::from(vec![Span::styled(
+                    padded_label,
+                    Style::default()
+                        .fg(mocha::BASE)
+                        .bg(color)
+                        .add_modifier(Modifier::BOLD),
+                )])
+            } else {
+                let content_w = (rect.width as usize).saturating_sub(4);
+                let label_w = unicode_width::UnicodeWidthStr::width(label);
+                let pad_w = content_w.saturating_sub(label_w);
+                let pad_left = pad_w / 2;
+                let pad_right = pad_w - pad_left;
+                let padded_label =
+                    format!("{}{}{}", " ".repeat(pad_left), label, " ".repeat(pad_right));
+                Line::from(vec![
+                    Span::styled("[ ", Style::default().fg(CATPPUCCIN_MOCHA.border)),
+                    Span::styled(
+                        padded_label,
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" ]", Style::default().fg(CATPPUCCIN_MOCHA.border)),
+                ])
+            };
+            let btn_widget = Paragraph::new(text);
+            f.render_widget(btn_widget, rect);
         };
-        let btn_widget = Paragraph::new(text);
-        f.render_widget(btn_widget, rect);
-    };
 
     // Render the 4 buttons
     if rects.len() >= 4 {
-        render_btn(f, rects[0], b0_label, app.hover_flash_action == Some(0), b0_color);
-        render_btn(f, rects[1], b1_label, app.hover_flash_action == Some(1), b1_color);
-        render_btn(f, rects[2], b2_label, app.hover_flash_action == Some(2), b2_color);
-        render_btn(f, rects[3], b3_label, app.hover_flash_action == Some(3), b3_color);
+        render_btn(
+            f,
+            rects[0],
+            b0_label,
+            app.hover_flash_action == Some(0),
+            b0_color,
+        );
+        render_btn(
+            f,
+            rects[1],
+            b1_label,
+            app.hover_flash_action == Some(1),
+            b1_color,
+        );
+        render_btn(
+            f,
+            rects[2],
+            b2_label,
+            app.hover_flash_action == Some(2),
+            b2_color,
+        );
+        render_btn(
+            f,
+            rects[3],
+            b3_label,
+            app.hover_flash_action == Some(3),
+            b3_color,
+        );
     }
 }
 

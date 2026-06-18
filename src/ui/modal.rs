@@ -421,7 +421,11 @@ pub fn draw_custom_baud(f: &mut Frame, app: &App, area: Rect) {
     let title = Paragraph::new(Line::from(vec![
         Span::styled("[⚡] ", Style::default()),
         Span::styled(
-            if lang == "zh" { "设置波特率" } else { "Set Baud Rate" },
+            if lang == "zh" {
+                "设置波特率"
+            } else {
+                "Set Baud Rate"
+            },
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.accent)
                 .add_modifier(Modifier::BOLD),
@@ -436,7 +440,11 @@ pub fn draw_custom_baud(f: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .title(Span::styled(
-                    if lang == "zh" { " 自定义波特率 (输入后按回车) " } else { " Custom Baud Rate (Type & Enter) " },
+                    if lang == "zh" {
+                        " 自定义波特率 (输入后按回车) "
+                    } else {
+                        " Custom Baud Rate (Type & Enter) "
+                    },
                     Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
                 ))
                 .borders(Borders::ALL)
@@ -454,7 +462,11 @@ pub fn draw_custom_baud(f: &mut Frame, app: &App, area: Rect) {
     };
     let presets = Paragraph::new(presets_msg)
         .alignment(Alignment::Center)
-        .style(Style::default().fg(CATPPUCCIN_MOCHA.text_muted).bg(mocha::MANTLE));
+        .style(
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text_muted)
+                .bg(mocha::MANTLE),
+        );
     f.render_widget(presets, chunks[2]);
 
     // 4. Auto-detect hint
@@ -465,7 +477,12 @@ pub fn draw_custom_baud(f: &mut Frame, app: &App, area: Rect) {
     };
     let hint = Paragraph::new(auto_detect_hint)
         .alignment(Alignment::Center)
-        .style(Style::default().fg(CATPPUCCIN_MOCHA.accent).add_modifier(Modifier::ITALIC).bg(mocha::MANTLE));
+        .style(
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.accent)
+                .add_modifier(Modifier::ITALIC)
+                .bg(mocha::MANTLE),
+        );
     f.render_widget(hint, chunks[3]);
 }
 
@@ -493,7 +510,11 @@ pub fn draw_auto_reply(f: &mut Frame, app: &App, area: Rect) {
     let lang = &app.tool_config.language;
 
     // 1. Title
-    let title_text = if lang == "zh" { "自动回复配置" } else { "Auto-Reply Configuration" };
+    let title_text = if lang == "zh" {
+        "自动回复配置"
+    } else {
+        "Auto-Reply Configuration"
+    };
     let title = Paragraph::new(Line::from(vec![
         Span::styled("[🔄] ", Style::default()),
         Span::styled(
@@ -509,12 +530,23 @@ pub fn draw_auto_reply(f: &mut Frame, app: &App, area: Rect) {
 
     // 2. Match Pattern input box
     let pattern_focused = app.auto_reply_focused_field == 0;
-    let pattern_border = if pattern_focused { CATPPUCCIN_MOCHA.border_focus } else { CATPPUCCIN_MOCHA.border };
-    let pattern_title = if lang == "zh" { " 匹配模式 (支持 Regex / 文本) " } else { " Match Pattern (Regex/Text) " };
+    let pattern_border = if pattern_focused {
+        CATPPUCCIN_MOCHA.border_focus
+    } else {
+        CATPPUCCIN_MOCHA.border
+    };
+    let pattern_title = if lang == "zh" {
+        " 匹配模式 (支持 Regex / 文本) "
+    } else {
+        " Match Pattern (Regex/Text) "
+    };
     let pattern_box = Paragraph::new(app.auto_reply_pattern_input.as_str())
         .block(
             Block::default()
-                .title(Span::styled(pattern_title, Style::default().fg(pattern_border)))
+                .title(Span::styled(
+                    pattern_title,
+                    Style::default().fg(pattern_border),
+                ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(pattern_border)),
@@ -524,12 +556,23 @@ pub fn draw_auto_reply(f: &mut Frame, app: &App, area: Rect) {
 
     // 3. Response input box
     let response_focused = app.auto_reply_focused_field == 1;
-    let response_border = if response_focused { CATPPUCCIN_MOCHA.border_focus } else { CATPPUCCIN_MOCHA.border };
-    let response_title = if lang == "zh" { " 回复数据 (支持 \\r, \\n 转义) " } else { " Response Data (Supports \\r, \\n escapes) " };
+    let response_border = if response_focused {
+        CATPPUCCIN_MOCHA.border_focus
+    } else {
+        CATPPUCCIN_MOCHA.border
+    };
+    let response_title = if lang == "zh" {
+        " 回复数据 (支持 \\r, \\n 转义) "
+    } else {
+        " Response Data (Supports \\r, \\n escapes) "
+    };
     let response_box = Paragraph::new(app.auto_reply_response_input.as_str())
         .block(
             Block::default()
-                .title(Span::styled(response_title, Style::default().fg(response_border)))
+                .title(Span::styled(
+                    response_title,
+                    Style::default().fg(response_border),
+                ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(response_border)),
@@ -543,9 +586,11 @@ pub fn draw_auto_reply(f: &mut Frame, app: &App, area: Rect) {
     } else {
         "Tab: Switch input | Enter: Save & Enable | Esc: Cancel"
     };
-    let hint = Paragraph::new(hint_msg)
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(CATPPUCCIN_MOCHA.text_muted).bg(mocha::MANTLE));
+    let hint = Paragraph::new(hint_msg).alignment(Alignment::Center).style(
+        Style::default()
+            .fg(CATPPUCCIN_MOCHA.text_muted)
+            .bg(mocha::MANTLE),
+    );
     f.render_widget(hint, chunks[3]);
 }
 
@@ -601,15 +646,26 @@ pub fn draw_manifest_edit(f: &mut Frame, app: &App, area: Rect) {
 
     // 2. Input box
     let input_title = if app.manifest_edit_is_offset {
-        if lang == "zh" { " 偏移地址 (例如: 0x10000) " } else { " Offset Address (e.g. 0x10000) " }
+        if lang == "zh" {
+            " 偏移地址 (例如: 0x10000) "
+        } else {
+            " Offset Address (e.g. 0x10000) "
+        }
     } else {
-        if lang == "zh" { " bin 文件路径 (输入/粘贴后按回车) " } else { " Bin File Path (Type/Paste & Enter) " }
+        if lang == "zh" {
+            " bin 文件路径 (输入/粘贴后按回车) "
+        } else {
+            " Bin File Path (Type/Paste & Enter) "
+        }
     };
 
     let input_widget = Paragraph::new(app.manifest_edit_input.as_str())
         .block(
             Block::default()
-                .title(Span::styled(input_title, Style::default().fg(CATPPUCCIN_MOCHA.border_focus)))
+                .title(Span::styled(
+                    input_title,
+                    Style::default().fg(CATPPUCCIN_MOCHA.border_focus),
+                ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(CATPPUCCIN_MOCHA.success)),
@@ -623,9 +679,11 @@ pub fn draw_manifest_edit(f: &mut Frame, app: &App, area: Rect) {
     } else {
         "Enter: Confirm & Save | Esc: Cancel"
     };
-    let hint = Paragraph::new(hint_msg)
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(CATPPUCCIN_MOCHA.text_muted).bg(mocha::MANTLE));
+    let hint = Paragraph::new(hint_msg).alignment(Alignment::Center).style(
+        Style::default()
+            .fg(CATPPUCCIN_MOCHA.text_muted)
+            .bg(mocha::MANTLE),
+    );
     f.render_widget(hint, chunks[2]);
 }
 
@@ -657,34 +715,58 @@ pub fn draw_file_picker(f: &mut Frame, app: &mut App, area: Rect) {
     let title_line = Line::from(vec![
         Span::styled("📂 ", Style::default()),
         Span::styled(
-            if lang == "zh" { "当前目录: " } else { "Dir: " },
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted)
+            if lang == "zh" {
+                "当前目录: "
+            } else {
+                "Dir: "
+            },
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
         ),
         Span::styled(
             path_str,
-            Style::default().fg(CATPPUCCIN_MOCHA.accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.accent)
+                .add_modifier(Modifier::BOLD),
         ),
     ]);
-    f.render_widget(Paragraph::new(title_line).alignment(Alignment::Left), chunks[0]);
+    f.render_widget(
+        Paragraph::new(title_line).alignment(Alignment::Left),
+        chunks[0],
+    );
 
     // 2. Filter input box
-    let filter_title = if lang == "zh" { " 输入过滤文件名 (支持实时筛选) " } else { " Filter filename (real-time) " };
+    let filter_title = if lang == "zh" {
+        " 输入过滤文件名 (支持实时筛选) "
+    } else {
+        " Filter filename (real-time) "
+    };
     let filter_text = if app.file_picker_search_input.is_empty() {
         Span::styled(
-            if lang == "zh" { "输入筛选..." } else { "Type to filter..." },
-            Style::default().fg(CATPPUCCIN_MOCHA.text_disabled).add_modifier(Modifier::ITALIC)
+            if lang == "zh" {
+                "输入筛选..."
+            } else {
+                "Type to filter..."
+            },
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text_disabled)
+                .add_modifier(Modifier::ITALIC),
         )
     } else {
         Span::styled(
             format!("{}█", app.file_picker_search_input),
-            Style::default().fg(CATPPUCCIN_MOCHA.text).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text)
+                .add_modifier(Modifier::BOLD),
         )
     };
 
     let filter_box = Paragraph::new(Line::from(filter_text))
         .block(
             Block::default()
-                .title(Span::styled(filter_title, Style::default().fg(CATPPUCCIN_MOCHA.border_focus)))
+                .title(Span::styled(
+                    filter_title,
+                    Style::default().fg(CATPPUCCIN_MOCHA.border_focus),
+                ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border_focus)),
@@ -702,15 +784,27 @@ pub fn draw_file_picker(f: &mut Frame, app: &mut App, area: Rect) {
     let mut rows = Vec::new();
     for (idx, item) in app.file_picker_items.iter().enumerate() {
         let is_selected = idx == app.file_picker_selected_idx;
-        
-        let prefix = if item.is_dir { "📁 " } else if item.name.ends_with(".bin") { "🟢 " } else { "📄 " };
-        
-        let name_style = if is_selected {
-            Style::default().fg(CATPPUCCIN_MOCHA.accent).add_modifier(Modifier::BOLD)
-        } else if item.is_dir {
-            Style::default().fg(CATPPUCCIN_MOCHA.primary).add_modifier(Modifier::BOLD)
+
+        let prefix = if item.is_dir {
+            "📁 "
         } else if item.name.ends_with(".bin") {
-            Style::default().fg(CATPPUCCIN_MOCHA.success).add_modifier(Modifier::BOLD)
+            "🟢 "
+        } else {
+            "📄 "
+        };
+
+        let name_style = if is_selected {
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.accent)
+                .add_modifier(Modifier::BOLD)
+        } else if item.is_dir {
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.primary)
+                .add_modifier(Modifier::BOLD)
+        } else if item.name.ends_with(".bin") {
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.success)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(CATPPUCCIN_MOCHA.text)
         };
@@ -729,21 +823,27 @@ pub fn draw_file_picker(f: &mut Frame, app: &mut App, area: Rect) {
 
         rows.push(
             ratatui::widgets::Row::new(vec![
-                ratatui::widgets::Cell::from(Span::styled(format!("{}{}", prefix, item.name), name_style)),
+                ratatui::widgets::Cell::from(Span::styled(
+                    format!("{}{}", prefix, item.name),
+                    name_style,
+                )),
                 ratatui::widgets::Cell::from(Span::styled(item.size_str.clone(), size_style)),
             ])
-            .style(Style::default().bg(row_bg))
+            .style(Style::default().bg(row_bg)),
         );
     }
 
-    let widths = [
-        Constraint::Min(30),
-        Constraint::Length(12),
-    ];
+    let widths = [Constraint::Min(30), Constraint::Length(12)];
 
     let table = ratatui::widgets::Table::new(rows, widths)
         .header(
-            ratatui::widgets::Row::new(headers.into_iter().map(ratatui::widgets::Cell::from).collect::<Vec<_>>()).style(
+            ratatui::widgets::Row::new(
+                headers
+                    .into_iter()
+                    .map(ratatui::widgets::Cell::from)
+                    .collect::<Vec<_>>(),
+            )
+            .style(
                 Style::default()
                     .fg(mocha::SUBTEXT1)
                     .bg(mocha::SURFACE0)
@@ -761,9 +861,10 @@ pub fn draw_file_picker(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         "▲/▼: Select | Enter: Open/Confirm | Backspace: Up Directory (or delete) | Esc: Close"
     };
-    let hint = Paragraph::new(hint_msg)
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(CATPPUCCIN_MOCHA.text_muted).bg(mocha::MANTLE));
+    let hint = Paragraph::new(hint_msg).alignment(Alignment::Center).style(
+        Style::default()
+            .fg(CATPPUCCIN_MOCHA.text_muted)
+            .bg(mocha::MANTLE),
+    );
     f.render_widget(hint, chunks[3]);
 }
-

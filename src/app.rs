@@ -1,8 +1,10 @@
-use crate::config::{PROJECT_CONFIG_FIELD_COUNT, ProjectConfig, ToolConfig};
+use crate::config::{
+    FirmwareImage, PROJECT_CONFIG_FIELD_COUNT, ProjectConfig, ToolConfig, create_merged_flash_image,
+};
 use crate::worker::{self, WorkerMessage};
 use ratatui::layout::Rect;
-use std::sync::Arc;
 use std::io::Read;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const SPLASH_TICKS: usize = 4;
@@ -38,6 +40,7 @@ pub struct LayoutZones {
     pub flash_device_table: Rect,
     pub flash_empty_state: Rect,
     pub flash_mode_toggle: Rect,
+    pub flash_donotchg_toggle: Rect,
     pub custom_baud_modal: Rect,
     pub auto_reply_modal: Rect,
     pub flash_manifest_table: Rect,
@@ -79,6 +82,9 @@ pub struct Channel {
     pub pid: Option<u16>,
     pub usb_product: Option<String>,
     pub usb_manufacturer: Option<String>,
+    pub auto_flash_armed: bool,
+    pub auto_probe_pending: bool,
+    pub auto_last_probe_at: Instant,
 }
 
 impl Channel {
@@ -106,6 +112,9 @@ impl Channel {
             pid: port.pid,
             usb_product: port.product,
             usb_manufacturer: port.manufacturer,
+            auto_flash_armed: true,
+            auto_probe_pending: false,
+            auto_last_probe_at: Instant::now() - Duration::from_secs(10),
         }
     }
 }
@@ -328,8 +337,10 @@ pub struct App {
     pub latest_image_height: usize,
     pub latest_image_data: Vec<u8>,
     pub show_sidebar: bool,
-    pub serial_tx_senders:
-        std::collections::HashMap<String, tokio::sync::mpsc::UnboundedSender<crate::worker::MonitorCommand>>,
+    pub serial_tx_senders: std::collections::HashMap<
+        String,
+        tokio::sync::mpsc::UnboundedSender<crate::worker::MonitorCommand>,
+    >,
     pub serial_monitor_baud_rates: std::collections::HashMap<String, u32>,
     pub serial_pending_monitors:
         std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>,
@@ -351,31 +362,176 @@ pub struct App {
 
 impl App {
     pub fn new(config_path: String) -> Self {
+        Self::new_with_platformio_ini(config_path, None)
+    }
+
+    pub fn new_with_platformio_ini(
+        config_path: String,
+        external_platformio_ini: Option<std::path::PathBuf>,
+    ) -> Self {
         let mut pio_detected = false;
-        let mut config = if let Some(pio_cfg) = ProjectConfig::detect_platformio_config() {
-            pio_detected = true;
-            pio_cfg
-        } else if std::path::Path::new("factory/project_config.json").exists() {
-            ProjectConfig::load_from_file("factory/project_config.json").unwrap_or_else(|_| {
-                ProjectConfig::load_from_file(&config_path).unwrap_or_else(|_| {
-                    let default_cfg = ProjectConfig::default();
-                    let _ = default_cfg.save_to_file(&config_path);
-                    default_cfg
-                })
-            })
-        } else {
+        let mut pio_package_notice = None;
+        let factory_dir = std::path::Path::new("factory");
+        let factory_flash_config = factory_dir.join("piopulse.toml");
+        let mut active_config_path = config_path.clone();
+        let load_user_or_default = || {
             ProjectConfig::load_from_file(&config_path).unwrap_or_else(|_| {
                 let default_cfg = ProjectConfig::default();
                 let _ = default_cfg.save_to_file(&config_path);
                 default_cfg
             })
         };
+        let mut config = if let Some(pio_ini) = external_platformio_ini {
+            pio_detected = true;
+            let current_dir =
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            match ProjectConfig::prepare_external_platformio_project(&current_dir, &pio_ini) {
+                Ok(pio_cfg) => {
+                    if let Some(factory_cfg) = create_factory_manifest_from_existing_artifacts(
+                        Some(&pio_cfg),
+                        factory_dir,
+                        &factory_flash_config,
+                    ) {
+                        pio_package_notice = Some(format!(
+                            "External PlatformIO config loaded from {}; factory/piopulse.toml generated from existing factory binaries.",
+                            pio_ini.display()
+                        ));
+                        active_config_path = factory_flash_config.to_string_lossy().to_string();
+                        factory_cfg
+                    } else {
+                        match pio_cfg.materialize_platformio_factory_package() {
+                            Ok(factory_cfg) => {
+                                pio_package_notice = Some(format!(
+                                    "External PlatformIO config loaded from {}; factory package generated at factory/piopulse.toml.",
+                                    pio_ini.display()
+                                ));
+                                active_config_path =
+                                    factory_flash_config.to_string_lossy().to_string();
+                                factory_cfg
+                            }
+                            Err(err) => {
+                                pio_package_notice = Some(format!(
+                                    "External PlatformIO config loaded from {}, but startup self-check could not generate factory package: {}",
+                                    pio_ini.display(),
+                                    format_platformio_build_error(&err)
+                                ));
+                                pio_cfg
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    pio_package_notice = Some(format!(
+                        "External PlatformIO config could not be used: {}",
+                        format_platformio_build_error(&err)
+                    ));
+                    load_user_or_default()
+                }
+            }
+        } else if factory_flash_config.exists() {
+            active_config_path = factory_flash_config.to_string_lossy().to_string();
+            let loaded = ProjectConfig::load_from_file(&factory_flash_config)
+                .unwrap_or_else(|_| load_user_or_default());
+            if manifest_has_errors(&loaded) {
+                if let Some(factory_cfg) = create_factory_manifest_from_existing_artifacts(
+                    Some(&loaded),
+                    factory_dir,
+                    &factory_flash_config,
+                ) {
+                    pio_package_notice = Some(
+                        "Startup self-check repaired factory/piopulse.toml from existing factory binaries."
+                            .to_string(),
+                    );
+                    active_config_path = factory_flash_config.to_string_lossy().to_string();
+                    factory_cfg
+                } else if let Some(pio_cfg) = ProjectConfig::detect_platformio_config() {
+                    pio_detected = true;
+                    match pio_cfg.materialize_platformio_factory_package() {
+                        Ok(factory_cfg) => {
+                            pio_package_notice = Some(
+                                "Startup self-check rebuilt factory/piopulse.toml from PlatformIO because the factory manifest was invalid."
+                                    .to_string(),
+                            );
+                            active_config_path = factory_flash_config.to_string_lossy().to_string();
+                            factory_cfg
+                        }
+                        Err(err) => {
+                            pio_package_notice = Some(format!(
+                                "Startup self-check found an invalid factory manifest but could not rebuild factory package: {}",
+                                format_platformio_build_error(&err)
+                            ));
+                            loaded
+                        }
+                    }
+                } else {
+                    loaded
+                }
+            } else {
+                loaded
+            }
+        } else if let Some(pio_cfg) = ProjectConfig::detect_platformio_config() {
+            pio_detected = true;
+            if let Some(factory_cfg) = create_factory_manifest_from_existing_artifacts(
+                Some(&pio_cfg),
+                factory_dir,
+                &factory_flash_config,
+            ) {
+                pio_package_notice = Some("PlatformIO project detected; factory/piopulse.toml generated from existing factory binaries.".to_string());
+                active_config_path = factory_flash_config.to_string_lossy().to_string();
+                factory_cfg
+            } else {
+                match pio_cfg.materialize_platformio_factory_package() {
+                    Ok(factory_cfg) => {
+                        pio_package_notice = Some(
+                            "PlatformIO project detected; factory package generated at factory/piopulse.toml."
+                                .to_string(),
+                        );
+                        active_config_path = factory_flash_config.to_string_lossy().to_string();
+                        factory_cfg
+                    }
+                    Err(err) => {
+                        pio_package_notice = Some(format!(
+                            "PlatformIO project detected, but startup self-check could not generate factory package: {}",
+                            format_platformio_build_error(&err)
+                        ));
+                        pio_cfg
+                    }
+                }
+            }
+        } else if let Some(factory_cfg) = create_factory_manifest_from_existing_artifacts(
+            None,
+            factory_dir,
+            &factory_flash_config,
+        ) {
+            pio_package_notice = Some("Factory manifest generated at factory/piopulse.toml from existing factory binaries.".to_string());
+            active_config_path = factory_flash_config.to_string_lossy().to_string();
+            factory_cfg
+        } else if factory_dir.is_dir() {
+            let mut default_cfg = ProjectConfig::default();
+            default_cfg.populate_default_images_if_empty(factory_dir);
+            default_cfg
+        } else {
+            load_user_or_default()
+        };
 
         let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        config.populate_default_images_if_empty(&current_dir);
+        let default_image_dir = if factory_dir.is_dir() {
+            factory_dir
+        } else {
+            current_dir.as_path()
+        };
+        config.populate_default_images_if_empty(default_image_dir);
 
-        let has_segmented = config.images.iter().any(|img| img.label != "merged" && img.label != "factory_merged" && !img.path.ends_with("merged.bin"));
-        let has_merged = config.images.iter().any(|img| img.label == "merged" || img.label == "factory_merged" || img.path.ends_with("merged.bin"));
+        let has_segmented = config.images.iter().any(|img| {
+            img.label != "merged"
+                && img.label != "factory_merged"
+                && !img.path.ends_with("merged.bin")
+        });
+        let has_merged = config.images.iter().any(|img| {
+            img.label == "merged"
+                || img.label == "factory_merged"
+                || img.path.ends_with("merged.bin")
+        });
         let use_merged_flash = has_merged && !has_segmented;
 
         let waveform_history = std::collections::HashMap::new();
@@ -392,7 +548,7 @@ impl App {
             },
             logs: Vec::new(),
             config,
-            config_path,
+            config_path: active_config_path,
             tool_config,
             show_tool_settings: false,
             tool_settings_selected,
@@ -523,6 +679,9 @@ impl App {
                 app.config.name
             ));
         }
+        if let Some(notice) = pio_package_notice {
+            app.log(notice);
+        }
         app
     }
 
@@ -544,7 +703,6 @@ impl App {
 
         let mut new_channels = Vec::new();
         let mut updated = false;
-        let mut newly_added_ports = Vec::new();
 
         // 1. Reconcile currently connected ports with existing channels
         for p in ports {
@@ -555,7 +713,6 @@ impl App {
                 // This is a newly plugged in device!
                 let chan = Channel::new(p.clone());
                 new_channels.push(chan);
-                newly_added_ports.push(p.name.clone());
                 updated = true;
             }
         }
@@ -588,48 +745,42 @@ impl App {
                     .len()
                     .saturating_sub(self.layout_zones.flash_device_table.height as usize),
             );
-
-            // Auto-trigger flashing if auto_flash mode is active and new ports were added
-            if self.auto_flash && !newly_added_ports.is_empty() {
-                if let Some(tx_chan) = tx {
-                    let mut indices_to_flash = Vec::new();
-                    for port_name in newly_added_ports {
-                        if let Some(idx) = self.channels.iter().position(|c| c.port == port_name) {
-                            indices_to_flash.push(idx);
-                        }
-                    }
-                    if !indices_to_flash.is_empty() {
-                        self.start_flashing_indices(
-                            indices_to_flash,
-                            tx_chan,
-                            "newly connected device(s)",
-                        );
-                    }
-                }
-            }
+            let _ = tx;
         }
     }
 
     pub fn toggle_merged_flash(&mut self) {
-        let has_segmented = self.config.images.iter().any(|img| img.label != "merged" && img.label != "factory_merged" && !img.path.ends_with("merged.bin"));
-        let has_merged = self.config.images.iter().any(|img| img.label == "merged" || img.label == "factory_merged" || img.path.ends_with("merged.bin"));
-        
-        if has_segmented && has_merged {
-            self.use_merged_flash = !self.use_merged_flash;
-            self.config.use_merged_flash = self.use_merged_flash;
-            self.log(format!(
-                "Flash mode toggled to: {}",
-                if self.use_merged_flash { "Merged Bin" } else { "Segmented" }
-            ));
-        } else if !has_merged {
-            self.log("Merged binary is not configured/available.");
-        } else {
-            self.log("Segmented files are not configured/available.");
-        }
+        self.use_merged_flash = !self.use_merged_flash;
+        self.config.use_merged_flash = self.use_merged_flash;
+        let _ = self.config.save_to_file(&self.config_path);
+        self.log(format!(
+            "Flash mode toggled to: {}",
+            if self.use_merged_flash {
+                "Merged Bin"
+            } else {
+                "Segmented"
+            }
+        ));
+    }
+
+    pub fn toggle_do_not_chg_bin(&mut self) {
+        self.config.do_not_chg_bin = !self.config.do_not_chg_bin;
+        let _ = self.config.save_to_file(&self.config_path);
+        self.log(format!(
+            "DoNotChgBin set to {}.",
+            if self.config.do_not_chg_bin {
+                "TRUE"
+            } else {
+                "FALSE"
+            }
+        ));
     }
 
     pub fn start_flashing_selected(&mut self, tx: tokio::sync::mpsc::Sender<WorkerMessage>) {
         if self.channels.is_empty() {
+            self.log(
+                "No serial device available. Connect a board or rescan ports before flashing.",
+            );
             return;
         }
 
@@ -638,11 +789,120 @@ impl App {
     }
 
     pub fn start_flashing(&mut self, tx: tokio::sync::mpsc::Sender<WorkerMessage>) {
-        if self.is_flashing || self.channels.is_empty() {
+        if self.is_flashing {
+            self.log("Flash request ignored because flashing is already active.");
+            return;
+        }
+        if self.channels.is_empty() {
+            self.log(
+                "No serial device available. Connect a board or rescan ports before flashing.",
+            );
             return;
         }
 
         self.start_flashing_indices((0..self.channels.len()).collect(), tx, "all devices");
+    }
+
+    fn current_mode_manifest_errors(&self) -> Vec<String> {
+        let (_, errors) = self.config.validate_manifest();
+        errors
+            .into_iter()
+            .filter(|err| {
+                if self.use_merged_flash {
+                    !err.contains("bootloader")
+                        && !err.contains("partitions")
+                        && !err.contains("boot_app0")
+                        && !err.contains("firmware")
+                        && !err.contains("Required image")
+                } else {
+                    !err.contains("merged")
+                }
+            })
+            .collect()
+    }
+
+    fn refresh_flash_mode_from_images(&mut self) {
+        let has_segmented = self.config.images.iter().any(|img| {
+            img.label != "merged"
+                && img.label != "factory_merged"
+                && !img.path.ends_with("merged.bin")
+        });
+        let has_merged = self.config.images.iter().any(|img| {
+            img.label == "merged"
+                || img.label == "factory_merged"
+                || img.path.ends_with("merged.bin")
+        });
+        self.use_merged_flash = has_merged && !has_segmented;
+        self.config.use_merged_flash = self.use_merged_flash;
+    }
+
+    fn ensure_flash_manifest_ready(&mut self) -> bool {
+        let errors = self.current_mode_manifest_errors();
+        if errors.is_empty() {
+            return true;
+        }
+
+        self.log("Firmware manifest is incomplete; trying to build PlatformIO project and generate factory package.");
+
+        match self.config.materialize_platformio_factory_package() {
+            Ok(config) => {
+                self.config = config;
+                self.refresh_flash_mode_from_images();
+                let errors = self.current_mode_manifest_errors();
+                if errors.is_empty() {
+                    self.log(
+                        "Factory package generated at factory/piopulse.toml; manifest is ready.",
+                    );
+                    true
+                } else {
+                    self.log(format!(
+                        "Factory package generated but manifest is still invalid: {}",
+                        errors.join(" | ")
+                    ));
+                    false
+                }
+            }
+            Err(err) => {
+                self.log(format!(
+                    "Cannot start flashing because firmware files are missing and factory package generation failed: {}",
+                    format_platformio_build_error(&err)
+                ));
+                false
+            }
+        }
+    }
+
+    pub fn update_auto_flash_sensing(&mut self, tx: tokio::sync::mpsc::Sender<WorkerMessage>) {
+        if !self.auto_flash || self.is_flashing {
+            return;
+        }
+
+        let probe_interval = Duration::from_secs(2);
+        let config = Arc::new(self.config.clone());
+
+        for channel in &mut self.channels {
+            if channel.auto_probe_pending || channel.auto_last_probe_at.elapsed() < probe_interval {
+                continue;
+            }
+
+            let should_probe =
+                channel.auto_flash_armed || (channel.finished && !channel.auto_flash_armed);
+            if !should_probe {
+                continue;
+            }
+
+            channel.auto_probe_pending = true;
+            channel.auto_last_probe_at = Instant::now();
+            if channel.auto_flash_armed {
+                channel.status = "Auto sensing".to_string();
+                channel.progress = 0;
+            } else {
+                channel.status = "Remove flashed board".to_string();
+                channel.progress = 100;
+            }
+
+            worker::start_auto_probe_task(channel.port.clone(), config.clone(), tx.clone());
+        }
     }
 
     pub fn move_flash_selection(&mut self, delta: isize) {
@@ -682,7 +942,25 @@ impl App {
         tx: tokio::sync::mpsc::Sender<WorkerMessage>,
         scope: &str,
     ) {
-        if self.is_flashing || indices.is_empty() {
+        if self.is_flashing {
+            self.log("Flash request ignored because flashing is already active.");
+            return;
+        }
+        if indices.is_empty() {
+            self.log("Flash request ignored because no device rows are selected.");
+            return;
+        }
+
+        if !self.ensure_flash_manifest_ready() {
+            for idx in indices {
+                if let Some(channel) = self.channels.get_mut(idx) {
+                    channel.status = "Manifest missing".to_string();
+                    channel.progress = 0;
+                    channel.error = Some("Firmware manifest is incomplete".to_string());
+                    channel.finished = false;
+                    channel.success = false;
+                }
+            }
             return;
         }
 
@@ -730,6 +1008,8 @@ impl App {
             channel.error = None;
             channel.finished = false;
             channel.success = false;
+            channel.auto_flash_armed = false;
+            channel.auto_probe_pending = false;
 
             self.stats.total_attempted += 1;
 
@@ -1065,6 +1345,72 @@ impl App {
                     }
                 }
             }
+            WorkerMessage::AutoProbeResult {
+                port,
+                present,
+                chip,
+                mac,
+                error_msg,
+            } => {
+                let mut start_idx = None;
+                let mut log_msg = None;
+
+                if let Some(idx) = self.channels.iter().position(|c| c.port == port) {
+                    let channel = &mut self.channels[idx];
+                    channel.auto_probe_pending = false;
+                    channel.auto_last_probe_at = Instant::now();
+
+                    if present {
+                        channel.chip = chip;
+                        channel.mac = mac;
+                        if channel.auto_flash_armed {
+                            channel.status = "Auto detected".to_string();
+                            channel.progress = 1;
+                            start_idx = Some(idx);
+                            log_msg =
+                                Some(format!("[{}] Auto-sensed product, starting flash.", port));
+                        } else {
+                            channel.status = "Remove flashed board".to_string();
+                            channel.progress = 100;
+                        }
+                    } else if channel.auto_flash_armed {
+                        channel.status = "Waiting for product".to_string();
+                        channel.progress = 0;
+                        channel.chip = None;
+                        channel.mac = None;
+                        if let Some(err) = error_msg {
+                            channel.error = Some(err);
+                        }
+                    } else {
+                        channel.auto_flash_armed = true;
+                        channel.finished = false;
+                        channel.success = false;
+                        channel.status = "Waiting for product".to_string();
+                        channel.progress = 0;
+                        channel.chip = None;
+                        channel.mac = None;
+                        channel.serial_number = None;
+                        channel.device_name = None;
+                        channel.trace_id = None;
+                        channel.error = None;
+                        channel.qa_result = "Pending".to_string();
+                        log_msg = Some(format!(
+                            "[{}] Flashed board removed; station is ready for the next product.",
+                            port
+                        ));
+                    }
+                }
+
+                if let Some(msg) = log_msg {
+                    self.log(msg);
+                }
+
+                if let (Some(idx), Some(tx)) = (start_idx, self.worker_tx.clone()) {
+                    if self.auto_flash && !self.is_flashing {
+                        self.start_flashing_indices(vec![idx], tx, "auto-sensed product");
+                    }
+                }
+            }
             WorkerMessage::Finished {
                 port,
                 success,
@@ -1079,6 +1425,11 @@ impl App {
                 if let Some(channel) = self.channels.iter_mut().find(|c| c.port == port) {
                     channel.finished = true;
                     channel.success = success;
+                    channel.auto_probe_pending = false;
+                    if self.auto_flash {
+                        channel.auto_flash_armed = false;
+                        channel.auto_last_probe_at = Instant::now();
+                    }
                     if success {
                         channel.status = "SUCCESS".to_string();
                         channel.progress = 100;
@@ -1137,7 +1488,8 @@ impl App {
                 // Auto-Reply logic
                 if self.serial_auto_reply_enabled && !self.serial_auto_reply_pattern.is_empty() {
                     let rx_text = String::from_utf8_lossy(&data);
-                    let matched = if let Ok(re) = regex::Regex::new(&self.serial_auto_reply_pattern) {
+                    let matched = if let Ok(re) = regex::Regex::new(&self.serial_auto_reply_pattern)
+                    {
                         re.is_match(&rx_text)
                     } else {
                         rx_text.contains(&self.serial_auto_reply_pattern)
@@ -1147,7 +1499,8 @@ impl App {
                         let bytes = unescaped_resp.as_bytes().to_vec();
 
                         if let Some(sender) = self.serial_tx_senders.get(&port).cloned() {
-                            let tx_log = format!("[Auto-Reply] {}", self.serial_auto_reply_response);
+                            let tx_log =
+                                format!("[Auto-Reply] {}", self.serial_auto_reply_response);
                             self.log(format!("[{}] [TX] {}", port, tx_log));
                             self.capture_serial_timeline_frame(SerialDirection::Tx, &port, &bytes);
                             let _ = sender.send(crate::worker::MonitorCommand::WriteData(bytes));
@@ -1166,7 +1519,10 @@ impl App {
                     format!("Baud: {} bps", baud_rate),
                     SerialNoticeKind::Success,
                 );
-                self.log(format!("[{}] Auto-detected baud rate: {} bps.", port, baud_rate));
+                self.log(format!(
+                    "[{}] Auto-detected baud rate: {} bps.",
+                    port, baud_rate
+                ));
 
                 // If it was monitoring, restart monitoring at the new baud rate
                 if let Some(active_port) = self.get_selected_port() {
@@ -1214,8 +1570,12 @@ impl App {
                 self.serial_tx_senders.insert(port.clone(), sender.clone());
 
                 // Set initial DTR and RTS pin states
-                let _ = sender.send(crate::worker::MonitorCommand::SetDtr(self.serial_dtr_active));
-                let _ = sender.send(crate::worker::MonitorCommand::SetRts(self.serial_rts_active));
+                let _ = sender.send(crate::worker::MonitorCommand::SetDtr(
+                    self.serial_dtr_active,
+                ));
+                let _ = sender.send(crate::worker::MonitorCommand::SetRts(
+                    self.serial_rts_active,
+                ));
 
                 self.show_serial_notice(
                     format!("Monitoring {} at {} bps", port, baud_rate),
@@ -1257,6 +1617,8 @@ impl App {
             {
                 self.selected_widget_idx = self.dashboard_widgets.len() - 1;
             }
+        } else {
+            self.log("No widget selected. Press A to add a widget first.");
         }
     }
 
@@ -1699,12 +2061,7 @@ impl App {
             ])
             .split(button_rows[1]);
 
-        vec![
-            row1_cols[1],
-            row1_cols[3],
-            row2_cols[1],
-            row2_cols[3],
-        ]
+        vec![row1_cols[1], row1_cols[3], row2_cols[1], row2_cols[3]]
     }
 
     pub fn flash_summary_action_at(&self, col: u16, row: u16) -> Option<usize> {
@@ -1715,7 +2072,11 @@ impl App {
 
         let rects = self.get_flash_summary_button_rects();
         for (idx, rect) in rects.iter().enumerate() {
-            if col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height {
+            if col >= rect.x
+                && col < rect.x + rect.width
+                && row >= rect.y
+                && row < rect.y + rect.height
+            {
                 return Some(idx);
             }
         }
@@ -1949,6 +2310,10 @@ impl App {
                 self.toggle_merged_flash();
                 return true;
             }
+            if self.is_inside_rect(col, row, self.layout_zones.flash_donotchg_toggle) {
+                self.toggle_do_not_chg_bin();
+                return true;
+            }
 
             if self.channels.is_empty() {
                 if self.is_inside_rect(col, row, self.layout_zones.flash_empty_state) {
@@ -1970,11 +2335,25 @@ impl App {
                         }
                         1 => {
                             self.flash_batch_mode = !self.flash_batch_mode;
-                            self.log(format!("Flash Mode set to: {}", if self.flash_batch_mode { "BATCH" } else { "SINGLE" }));
+                            self.log(format!(
+                                "Flash Mode set to: {}",
+                                if self.flash_batch_mode {
+                                    "BATCH"
+                                } else {
+                                    "SINGLE"
+                                }
+                            ));
                         }
                         2 => {
                             self.auto_flash = !self.auto_flash;
-                            self.log(format!("Auto-Flash mode: {}.", if self.auto_flash { "ENABLED" } else { "DISABLED" }));
+                            self.log(format!(
+                                "Auto-Flash mode: {}.",
+                                if self.auto_flash {
+                                    "ENABLED"
+                                } else {
+                                    "DISABLED"
+                                }
+                            ));
                         }
                         3 => {
                             if self.is_flashing {
@@ -2007,10 +2386,15 @@ impl App {
                 let relative_row = row.saturating_sub(rect.y + 1) as usize;
 
                 let (image_results, _) = self.config.validate_manifest();
-                let filtered_results: Vec<&crate::config::ImageValidationResult> = image_results.iter().filter(|res| {
-                    let is_merged = res.label.contains("merged") || res.path.ends_with("factory_merged.bin") || res.path.ends_with("merged.bin");
-                    self.use_merged_flash == is_merged
-                }).collect();
+                let filtered_results: Vec<&crate::config::ImageValidationResult> = image_results
+                    .iter()
+                    .filter(|res| {
+                        let is_merged = res.label.contains("merged")
+                            || res.path.ends_with("factory_merged.bin")
+                            || res.path.ends_with("merged.bin");
+                        self.use_merged_flash == is_merged
+                    })
+                    .collect();
 
                 if relative_row < filtered_results.len() {
                     let res = filtered_results[relative_row];
@@ -2029,9 +2413,13 @@ impl App {
 
                         let path = std::path::Path::new(&res.path);
                         if path.is_absolute() {
-                            self.file_picker_current_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                            self.file_picker_current_dir = path
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
                         } else {
-                            self.file_picker_current_dir = std::env::current_dir().unwrap_or_default();
+                            self.file_picker_current_dir =
+                                std::env::current_dir().unwrap_or_default();
                         }
                         self.file_picker_selected_idx = 0;
                         self.refresh_file_picker_items();
@@ -2154,15 +2542,23 @@ impl App {
                         }
                         5 => {
                             self.serial_auto_reply_enabled = !self.serial_auto_reply_enabled;
-                            if self.serial_auto_reply_enabled && self.serial_auto_reply_pattern.is_empty() {
+                            if self.serial_auto_reply_enabled
+                                && self.serial_auto_reply_pattern.is_empty()
+                            {
                                 self.show_auto_reply_modal = true;
-                                self.auto_reply_pattern_input = self.serial_auto_reply_pattern.clone();
-                                self.auto_reply_response_input = self.serial_auto_reply_response.clone();
+                                self.auto_reply_pattern_input =
+                                    self.serial_auto_reply_pattern.clone();
+                                self.auto_reply_response_input =
+                                    self.serial_auto_reply_response.clone();
                                 self.auto_reply_focused_field = 0;
                             }
                             self.log(format!(
                                 "Auto Reply: {}",
-                                if self.serial_auto_reply_enabled { "ENABLED" } else { "DISABLED" }
+                                if self.serial_auto_reply_enabled {
+                                    "ENABLED"
+                                } else {
+                                    "DISABLED"
+                                }
                             ));
                         }
                         6 => self.toggle_serial_recording(),
@@ -2571,19 +2967,41 @@ impl App {
 
     pub fn toggle_dtr(&mut self) {
         self.serial_dtr_active = !self.serial_dtr_active;
-        self.log(format!("DTR Pin set to {}", if self.serial_dtr_active { "HIGH" } else { "LOW" }));
-        let port = self.get_selected_port().unwrap_or_else(|| "NONE".to_string());
+        self.log(format!(
+            "DTR Pin set to {}",
+            if self.serial_dtr_active {
+                "HIGH"
+            } else {
+                "LOW"
+            }
+        ));
+        let port = self
+            .get_selected_port()
+            .unwrap_or_else(|| "NONE".to_string());
         if let Some(sender) = self.serial_tx_senders.get(&port).cloned() {
-            let _ = sender.send(crate::worker::MonitorCommand::SetDtr(self.serial_dtr_active));
+            let _ = sender.send(crate::worker::MonitorCommand::SetDtr(
+                self.serial_dtr_active,
+            ));
         }
     }
 
     pub fn toggle_rts(&mut self) {
         self.serial_rts_active = !self.serial_rts_active;
-        self.log(format!("RTS Pin set to {}", if self.serial_rts_active { "HIGH" } else { "LOW" }));
-        let port = self.get_selected_port().unwrap_or_else(|| "NONE".to_string());
+        self.log(format!(
+            "RTS Pin set to {}",
+            if self.serial_rts_active {
+                "HIGH"
+            } else {
+                "LOW"
+            }
+        ));
+        let port = self
+            .get_selected_port()
+            .unwrap_or_else(|| "NONE".to_string());
         if let Some(sender) = self.serial_tx_senders.get(&port).cloned() {
-            let _ = sender.send(crate::worker::MonitorCommand::SetRts(self.serial_rts_active));
+            let _ = sender.send(crate::worker::MonitorCommand::SetRts(
+                self.serial_rts_active,
+            ));
         }
     }
 
@@ -2616,10 +3034,16 @@ impl App {
         if let Some(img) = self.config.images.iter_mut().find(|i| i.label == label) {
             if is_offset {
                 img.offset = value.clone();
-                self.log(format!("Updated manifest offset for '{}' to {}", label, value));
+                self.log(format!(
+                    "Updated manifest offset for '{}' to {}",
+                    label, value
+                ));
             } else {
                 img.path = value.clone();
-                self.log(format!("Updated manifest path for '{}' to {}", label, value));
+                self.log(format!(
+                    "Updated manifest path for '{}' to {}",
+                    label, value
+                ));
             }
         }
 
@@ -2648,7 +3072,8 @@ impl App {
 
             for entry in entries.flatten() {
                 let path = entry.path();
-                let name = path.file_name()
+                let name = path
+                    .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
 
@@ -2683,7 +3108,12 @@ impl App {
                     "-".to_string()
                 };
 
-                let item = FilePickerItem { name, path, is_dir, size_str };
+                let item = FilePickerItem {
+                    name,
+                    path,
+                    is_dir,
+                    size_str,
+                };
                 if is_dir {
                     dirs.push(item);
                 } else {
@@ -2700,7 +3130,9 @@ impl App {
         }
 
         self.file_picker_items = items;
-        self.file_picker_selected_idx = self.file_picker_selected_idx.min(self.file_picker_items.len().saturating_sub(1));
+        self.file_picker_selected_idx = self
+            .file_picker_selected_idx
+            .min(self.file_picker_items.len().saturating_sub(1));
     }
 
     pub fn select_file_picker_item(&mut self) {
@@ -2721,7 +3153,10 @@ impl App {
 
             if let Some(img) = self.config.images.iter_mut().find(|i| i.label == label) {
                 img.path = value.clone();
-                self.log(format!("Updated manifest path for '{}' to {}", label, value));
+                self.log(format!(
+                    "Updated manifest path for '{}' to {}",
+                    label, value
+                ));
             }
 
             self.config.sync_images_to_flat_fields();
@@ -2755,10 +3190,7 @@ impl App {
         }
 
         self.serial_auto_baud_scanning = true;
-        self.show_serial_notice(
-            "Detecting Baud...".to_string(),
-            SerialNoticeKind::Info,
-        );
+        self.show_serial_notice("Detecting Baud...".to_string(), SerialNoticeKind::Info);
         self.log(format!("[{}] Starting auto-baud rate scanning...", port));
 
         let app_tx = self.worker_tx.clone();
@@ -2772,13 +3204,16 @@ impl App {
 
             for &baud in &rates {
                 if let Some(ref tx) = app_tx {
-                    let _ = tx.send(WorkerMessage::Log {
-                        port: port_clone.clone(),
-                        message: format!("Scanning at {} bps...", baud),
-                    }).await;
+                    let _ = tx
+                        .send(WorkerMessage::Log {
+                            port: port_clone.clone(),
+                            message: format!("Scanning at {} bps...", baud),
+                        })
+                        .await;
                 }
 
-                let mut port_builder = serialport::new(&port_clone, baud).timeout(Duration::from_millis(150));
+                let mut port_builder =
+                    serialport::new(&port_clone, baud).timeout(Duration::from_millis(150));
                 if let Some(db_char) = frame_format.chars().next() {
                     match db_char {
                         '5' => port_builder = port_builder.data_bits(serialport::DataBits::Five),
@@ -2829,10 +3264,12 @@ impl App {
             }
 
             if let Some(ref tx) = app_tx {
-                let _ = tx.send(WorkerMessage::BaudDetected {
-                    port: port_clone.clone(),
-                    baud_rate: best_baud,
-                }).await;
+                let _ = tx
+                    .send(WorkerMessage::BaudDetected {
+                        port: port_clone.clone(),
+                        baud_rate: best_baud,
+                    })
+                    .await;
             }
         });
     }
@@ -2877,6 +3314,110 @@ fn make_trace_id(port: &str, attempt: u32) -> String {
         .filter(|ch| ch.is_ascii_alphanumeric())
         .collect();
     format!("TRACE-{}-{:06}", sanitized_port, attempt)
+}
+
+fn manifest_has_errors(config: &ProjectConfig) -> bool {
+    !config.validate_manifest().1.is_empty()
+}
+
+fn create_factory_manifest_from_existing_artifacts(
+    base_config: Option<&ProjectConfig>,
+    factory_dir: &std::path::Path,
+    manifest_path: &std::path::Path,
+) -> Option<ProjectConfig> {
+    if !factory_dir.is_dir() {
+        return None;
+    }
+
+    let segmented_files = [
+        ("bootloader", "bootloader.bin", "0x0000"),
+        ("partitions", "partitions.bin", "0x8000"),
+        ("boot_app0", "boot_app0.bin", "0xe000"),
+        ("firmware", "firmware.bin", "0x10000"),
+    ];
+    let has_segmented = segmented_files
+        .iter()
+        .all(|(_, filename, _)| factory_dir.join(filename).is_file());
+    let merged_path = factory_dir.join("factory_merged.bin");
+    let mut has_merged = merged_path.is_file();
+
+    if !has_segmented && !has_merged {
+        return None;
+    }
+
+    if has_segmented && !has_merged {
+        let merged_result = create_merged_flash_image(
+            &[
+                (0x0000, &factory_dir.join("bootloader.bin")),
+                (0x8000, &factory_dir.join("partitions.bin")),
+                (0xe000, &factory_dir.join("boot_app0.bin")),
+                (0x10000, &factory_dir.join("firmware.bin")),
+            ],
+            &merged_path,
+        );
+        has_merged = merged_result.is_ok() && merged_path.is_file();
+    }
+
+    let mut config = base_config.cloned().unwrap_or_default();
+    config.images.clear();
+    config.merged_offset = "0x0000".to_string();
+    config.flash_encryption_mode = if config.flash_encryption {
+        "device_runtime".to_string()
+    } else {
+        "disabled".to_string()
+    };
+
+    if has_segmented {
+        for (label, filename, offset) in segmented_files {
+            config.images.push(FirmwareImage {
+                label: label.to_string(),
+                path: filename.to_string(),
+                offset: offset.to_string(),
+                required: true,
+                encrypted: false,
+                sha256: None,
+            });
+        }
+
+        config.bootloader_path = "bootloader.bin".to_string();
+        config.bootloader_offset = "0x0000".to_string();
+        config.partitions_path = "partitions.bin".to_string();
+        config.partitions_offset = "0x8000".to_string();
+        config.otadata_path = "boot_app0.bin".to_string();
+        config.otadata_offset = "0xe000".to_string();
+        config.app_path = "firmware.bin".to_string();
+        config.app_offset = "0x10000".to_string();
+    } else {
+        config.bootloader_path.clear();
+        config.partitions_path.clear();
+        config.otadata_path.clear();
+        config.app_path.clear();
+    }
+
+    if has_merged {
+        config.images.push(FirmwareImage {
+            label: "factory_merged".to_string(),
+            path: "factory_merged.bin".to_string(),
+            offset: config.merged_offset.clone(),
+            required: true,
+            encrypted: false,
+            sha256: None,
+        });
+    }
+
+    config.use_merged_flash = has_merged && !has_segmented;
+    config.save_to_file(manifest_path).ok()?;
+    ProjectConfig::load_from_file(manifest_path).ok()
+}
+
+fn format_platformio_build_error(err: &str) -> String {
+    if err.contains("bootloader_") && err.contains(".elf") && err.contains("not found") {
+        return format!(
+            "{}\n诊断: PlatformIO 指定的 bootloader ELF 在当前 framework 包中不存在。请检查 platformio.ini 的 board_build.f_flash / board_build.flash_mode / board_build.arduino.custom_bootloader，或更新 espressif32/framework-arduinoespressif32。",
+            err
+        );
+    }
+    err.to_string()
 }
 
 #[allow(dead_code)]
@@ -3208,23 +3749,24 @@ mod tests {
 
     #[test]
     fn test_sidebar_rendering() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
+        app.tool_config.language = "en".to_string();
         app.layout_zones.flash_summary = ratatui::layout::Rect::new(0, 0, 40, 8);
-        
+
         let rects = app.get_flash_summary_button_rects();
         assert_eq!(rects.len(), 4);
         assert_eq!(rects[0].width, 16);
         assert_eq!(rects[0].height, 1);
         assert_eq!(rects[2].width, 16);
         assert_eq!(rects[2].height, 1);
-        
-        let _ = std::fs::remove_file("test_project_config.json");
+
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_port_menu_toggle_and_select() {
         // Use a temporary path or mock path
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
 
         // Initially false
         assert!(!app.show_port_menu);
@@ -3269,12 +3811,12 @@ mod tests {
         assert_eq!(app.get_selected_port().unwrap(), "COM3");
 
         // Clean up mock file if created
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_exit_menu_buttons_are_mouse_clickable() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
 
         app.show_exit_menu = true;
@@ -3290,12 +3832,12 @@ mod tests {
         let quit_click = app.handle_mouse_click(44, 9, tx.clone());
         assert!(!quit_click);
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_exit_menu_buttons_select_on_mouse_hover() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         app.show_exit_menu = true;
         app.layout_zones.exit_menu_modal = ratatui::layout::Rect::new(10, 5, 48, 11);
 
@@ -3306,12 +3848,12 @@ mod tests {
         app.handle_mouse_move(44, 9);
         assert_eq!(app.exit_menu_selected, 1);
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_serial_buttons_select_on_mouse_hover() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         app.active_tab = ActiveTab::Serial;
         app.layout_zones.serial_port_info = ratatui::layout::Rect::new(10, 5, 20, 7);
         app.layout_zones.serial_options = ratatui::layout::Rect::new(30, 5, 20, 8);
@@ -3329,12 +3871,12 @@ mod tests {
         app.handle_mouse_move(52, 10);
         assert_eq!(app.hover_serial_quick_command, Some(3));
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_serial_compact_option_grid_clicks_columns() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Serial;
         app.layout_zones.serial_options = ratatui::layout::Rect::new(30, 5, 24, 8);
@@ -3351,7 +3893,7 @@ mod tests {
         assert!(app.handle_mouse_click(45, 7, tx));
         assert!(app.serial_hex_mode_rx);
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
@@ -3371,7 +3913,7 @@ mod tests {
 
     #[test]
     fn test_serial_monitor_stop_sets_tui_notice() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         app.serial_monitor_enabled = true;
         let (serial_tx, _serial_rx) = tokio::sync::mpsc::unbounded_channel();
         app.serial_tx_senders.insert("COM3".to_string(), serial_tx);
@@ -3390,12 +3932,12 @@ mod tests {
         app.tick();
         assert!(app.serial_notice.is_none());
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_worker_monitor_stopped_sets_release_notice() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
 
         app.handle_worker_message(crate::worker::WorkerMessage::MonitorStopped {
             port: "COM4".to_string(),
@@ -3406,12 +3948,12 @@ mod tests {
         assert!(notice.message.contains("COM4"));
         assert!(notice.message.contains("released"));
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_serial_quick_commands_scroll_with_mouse_wheel() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Serial;
         app.layout_zones.serial_quick_commands = ratatui::layout::Rect::new(50, 5, 30, 6);
@@ -3426,12 +3968,12 @@ mod tests {
         assert!(app.handle_mouse_click(52, 7, tx));
         assert!(app.logs.iter().any(|line| line.contains("[TX] ATI")));
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_flasher_table_scroll_hover_and_click_selects_channel() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Flasher;
         app.layout_zones.flash_device_table = ratatui::layout::Rect::new(0, 5, 80, 7);
@@ -3457,29 +3999,90 @@ mod tests {
         assert!(app.handle_mouse_click(10, 8, tx));
         assert_eq!(app.selected_channel_idx, 3);
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
+    }
+
+    #[test]
+    fn test_auto_probe_absent_rearms_finished_station() {
+        let mut app = App::new("test_piopulse.toml".to_string());
+        app.auto_flash = true;
+        app.channels = vec![Channel::new(crate::worker::DetectedPort {
+            name: "COM9".to_string(),
+            vid: None,
+            pid: None,
+            product: None,
+            manufacturer: None,
+        })];
+        app.channels[0].finished = true;
+        app.channels[0].success = true;
+        app.channels[0].auto_flash_armed = false;
+        app.channels[0].status = "SUCCESS".to_string();
+        app.channels[0].progress = 100;
+
+        app.handle_worker_message(crate::worker::WorkerMessage::AutoProbeResult {
+            port: "COM9".to_string(),
+            present: false,
+            chip: None,
+            mac: None,
+            error_msg: Some("no bootloader response".to_string()),
+        });
+
+        let channel = &app.channels[0];
+        assert!(channel.auto_flash_armed);
+        assert!(!channel.finished);
+        assert_eq!(channel.status, "Waiting for product");
+        assert_eq!(app.stats.total_failed, 0);
+
+        let _ = std::fs::remove_file("test_piopulse.toml");
+    }
+
+    #[test]
+    fn test_auto_probe_absent_while_armed_does_not_count_failure() {
+        let mut app = App::new("test_piopulse.toml".to_string());
+        app.auto_flash = true;
+        app.channels = vec![Channel::new(crate::worker::DetectedPort {
+            name: "COM10".to_string(),
+            vid: None,
+            pid: None,
+            product: None,
+            manufacturer: None,
+        })];
+
+        app.handle_worker_message(crate::worker::WorkerMessage::AutoProbeResult {
+            port: "COM10".to_string(),
+            present: false,
+            chip: None,
+            mac: None,
+            error_msg: Some("no product".to_string()),
+        });
+
+        let channel = &app.channels[0];
+        assert!(channel.auto_flash_armed);
+        assert_eq!(channel.status, "Waiting for product");
+        assert_eq!(app.stats.total_failed, 0);
+        assert_eq!(app.stats.total_attempted, 0);
+
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_flasher_manifest_table_click_and_edit() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Flasher;
 
         // Initialize images in app.config
-        app.config.images = vec![
-            crate::config::FirmwareImage {
-                label: "bootloader".to_string(),
-                path: "test_boot.bin".to_string(),
-                offset: "0x1000".to_string(),
-                required: true,
-                sha256: None,
-            }
-        ];
+        app.config.images = vec![crate::config::FirmwareImage {
+            label: "bootloader".to_string(),
+            path: "test_boot.bin".to_string(),
+            offset: "0x1000".to_string(),
+            required: true,
+            encrypted: false,
+            sha256: None,
+        }];
 
         // Click coordinates inside layout zone
         app.layout_zones.flash_manifest_table = ratatui::layout::Rect::new(50, 5, 50, 10);
-
 
         // Click Offset column
         assert!(app.handle_mouse_click(52, 6, tx.clone()));
@@ -3497,14 +4100,12 @@ mod tests {
         assert_eq!(app.file_picker_image_label, "bootloader");
 
         // Mock selection in picker
-        app.file_picker_items = vec![
-            crate::app::FilePickerItem {
-                name: "new_boot.bin".to_string(),
-                path: std::path::PathBuf::from("new_boot.bin"),
-                is_dir: false,
-                size_str: "10KB".to_string(),
-            }
-        ];
+        app.file_picker_items = vec![crate::app::FilePickerItem {
+            name: "new_boot.bin".to_string(),
+            path: std::path::PathBuf::from("new_boot.bin"),
+            is_dir: false,
+            size_str: "10KB".to_string(),
+        }];
         app.file_picker_selected_idx = 0;
         app.select_file_picker_item();
 
@@ -3512,12 +4113,32 @@ mod tests {
         assert_eq!(app.config.images[0].path, "new_boot.bin");
         assert_eq!(app.config.bootloader_path, "new_boot.bin"); // flat field synchronized!
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
+    }
+
+    #[test]
+    fn test_flasher_header_click_toggles_mode_and_donotchg() {
+        let mut app = App::new("test_piopulse.toml".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        app.active_tab = ActiveTab::Flasher;
+        app.layout_zones.flash_mode_toggle = ratatui::layout::Rect::new(10, 5, 60, 1);
+        app.layout_zones.flash_donotchg_toggle = ratatui::layout::Rect::new(10, 6, 60, 1);
+
+        let initial_mode = app.use_merged_flash;
+        assert!(app.handle_mouse_click(12, 5, tx.clone()));
+        assert_eq!(app.use_merged_flash, !initial_mode);
+        assert_eq!(app.config.use_merged_flash, app.use_merged_flash);
+
+        let initial_donotchg = app.config.do_not_chg_bin;
+        assert!(app.handle_mouse_click(12, 6, tx));
+        assert_eq!(app.config.do_not_chg_bin, !initial_donotchg);
+
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_flasher_keyboard_selection_tracks_scroll() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         app.active_tab = ActiveTab::Flasher;
         app.layout_zones.flash_device_table = ratatui::layout::Rect::new(0, 5, 80, 7);
         app.channels = (0..8)
@@ -3544,12 +4165,12 @@ mod tests {
         assert_eq!(app.selected_channel_idx, 0);
         assert_eq!(app.flash_table_scroll, 0);
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_flasher_summary_config_action_is_clickable() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Flasher;
         app.layout_zones.flash_summary = ratatui::layout::Rect::new(0, 0, 40, 10);
@@ -3569,12 +4190,12 @@ mod tests {
         // Since we clicked Action 3, and app.is_flashing is false, stats should be cleared
         assert_eq!(app.stats.total_attempted, 0);
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_dashboard_empty_buttons_select_on_mouse_hover() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         app.active_tab = ActiveTab::Widgets;
         app.layout_zones.monitor_panel = ratatui::layout::Rect::new(10, 5, 90, 20);
 
@@ -3590,12 +4211,12 @@ mod tests {
             Some(DashboardEmptyAction::Slider)
         );
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_dashboard_empty_compact_mode_does_not_add_from_blank_space() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Widgets;
         app.layout_zones.monitor_panel = ratatui::layout::Rect::new(0, 0, 70, 12);
@@ -3603,12 +4224,12 @@ mod tests {
         assert!(app.handle_mouse_click(4, 9, tx));
         assert!(app.dashboard_widgets.is_empty());
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_slider_click_uses_visual_track_columns() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Widgets;
         app.layout_zones.monitor_panel = ratatui::layout::Rect::new(10, 5, 80, 20);
@@ -3628,14 +4249,14 @@ mod tests {
         assert!(app.handle_mouse_click(track_start + PARAM_SLIDER_LAST_OFFSET, inner_y + 1, tx));
         assert_eq!(app.param_kp, 3.0);
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_top_tabs_select_on_mouse_hover() {
         use unicode_width::UnicodeWidthStr;
 
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         app.layout_zones.tabs = ratatui::layout::Rect::new(0, 3, 80, 3);
 
         app.handle_mouse_move(0, 3);
@@ -3646,12 +4267,12 @@ mod tests {
         app.handle_mouse_move(tab_plot_x as u16, 3);
         assert_eq!(app.hover_tab, Some(1));
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_top_tabs_compact_mode_uses_numbers_only() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         app.layout_zones.tabs = ratatui::layout::Rect::new(0, 3, 32, 2);
 
         assert_eq!(
@@ -3662,14 +4283,14 @@ mod tests {
         app.handle_mouse_move(8, 3);
         assert_eq!(app.hover_tab, Some(1));
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_plotter_header_clicks_use_real_pill_bounds() {
         use unicode_width::UnicodeWidthStr;
 
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Plotter;
         app.layout_zones.plotter_header = ratatui::layout::Rect::new(0, 5, 120, 4);
@@ -3715,14 +4336,14 @@ mod tests {
         assert_eq!(app.plotter_mode, view_after);
         assert!(!app.plotter_active);
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_plotter_header_compact_labels_keep_click_bounds() {
         use unicode_width::UnicodeWidthStr;
 
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Plotter;
         app.layout_zones.plotter_header = ratatui::layout::Rect::new(0, 5, 80, 3);
@@ -3750,14 +4371,14 @@ mod tests {
         assert!(app.handle_mouse_click(cursor as u16 + 1, 5, tx));
         assert_ne!(app.plotter_mode, view_before);
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_plotter_quick_commands_use_real_button_bounds() {
         use unicode_width::UnicodeWidthStr;
 
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Plotter;
         app.layout_zones.plotter_send_panel = ratatui::layout::Rect::new(0, 10, 100, 5);
@@ -3778,14 +4399,14 @@ mod tests {
             Some("START")
         );
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_header_mode_click_opens_sudo_prompt() {
         use unicode_width::UnicodeWidthStr;
 
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.layout_zones.header = ratatui::layout::Rect::new(0, 0, 80, 2);
 
@@ -3796,12 +4417,12 @@ mod tests {
         assert!(app.handle_mouse_click(mode_x as u16, 0, tx));
         assert!(app.is_entering_password);
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_plotter_view_zoom_pan_and_reset() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         app.channels.push(Channel::new(crate::worker::DetectedPort {
             name: "TEST".to_string(),
             vid: None,
@@ -3827,12 +4448,12 @@ mod tests {
         assert_eq!(app.plotter_view_samples, 100);
         assert_eq!(app.plotter_view_offset, 0);
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
     fn test_serial_timeline_recording_and_playback_rebuilds_waveform() {
-        let mut app = App::new("test_project_config.json".to_string());
+        let mut app = App::new("test_piopulse.toml".to_string());
         app.channels.push(Channel::new(crate::worker::DetectedPort {
             name: "TEST".to_string(),
             vid: None,
@@ -3866,7 +4487,7 @@ mod tests {
             Some(vec![1.0, 2.0])
         );
 
-        let _ = std::fs::remove_file("test_project_config.json");
+        let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]

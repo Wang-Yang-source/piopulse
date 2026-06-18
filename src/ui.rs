@@ -23,6 +23,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use std::time::Duration;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     if app.splash_ticks_remaining.is_some() {
@@ -94,6 +95,35 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.layout_zones.file_picker_modal = area;
         modal::draw_file_picker(f, app, area);
     }
+}
+
+pub fn draw_startup_screen(f: &mut Frame, lang: &str, elapsed: Duration) {
+    let is_zh = lang == "zh";
+    let status = if is_zh {
+        "正在准备工作区"
+    } else {
+        "Preparing workspace"
+    };
+    let detail = if is_zh {
+        format!(
+            "正在读取配置、检测 PlatformIO 和串口设备  |  已用 {}s",
+            elapsed.as_secs()
+        )
+    } else {
+        format!(
+            "Loading config, detecting PlatformIO and scanning serial ports  |  {}s elapsed",
+            elapsed.as_secs()
+        )
+    };
+    draw_logo_progress_screen(
+        f,
+        lang,
+        status,
+        None,
+        Some(&detail),
+        if is_zh { "请稍候" } else { "Please wait" },
+        ProgressBarMode::Indeterminate(elapsed),
+    );
 }
 
 fn draw_main_area(f: &mut Frame, app: &mut App, area: Rect) {
@@ -218,7 +248,52 @@ pub fn tab_titles_for_width(lang: &str, width: u16) -> [&'static str; 5] {
     }
 }
 
+enum ProgressBarMode {
+    Determinate { progress: usize, total: usize },
+    Indeterminate(Duration),
+}
+
 fn draw_splash_screen(f: &mut Frame, app: &App) {
+    let ticks_left = app.splash_ticks_remaining.unwrap_or(0);
+    let total_ticks = crate::app::SPLASH_TICKS;
+    let progress = total_ticks.saturating_sub(ticks_left).min(total_ticks);
+    let lang = &app.tool_config.language;
+    let is_zh = lang == "zh";
+    draw_logo_progress_screen(
+        f,
+        lang,
+        if is_zh {
+            "正在初始化工作区"
+        } else {
+            "Initializing workspace"
+        },
+        Some(format!("{:>3}%", progress * 100 / total_ticks.max(1))),
+        Some(if is_zh {
+            "串口  |  波形  |  烧录  |  配置"
+        } else {
+            "Serial  |  Plotter  |  Flash  |  Config"
+        }),
+        if is_zh {
+            "按任意键跳过"
+        } else {
+            "Press any key to skip"
+        },
+        ProgressBarMode::Determinate {
+            progress,
+            total: total_ticks,
+        },
+    );
+}
+
+fn draw_logo_progress_screen(
+    f: &mut Frame,
+    lang: &str,
+    status: &str,
+    progress_label: Option<String>,
+    detail: Option<&str>,
+    hint: &str,
+    progress_mode: ProgressBarMode,
+) {
     let area = f.size();
     let splash_bg = mocha::BASE;
     let splash_panel = mocha::MANTLE;
@@ -242,33 +317,39 @@ fn draw_splash_screen(f: &mut Frame, app: &App) {
     let inner = panel.inner(panel_area);
     f.render_widget(panel, panel_area);
 
-    let ticks_left = app.splash_ticks_remaining.unwrap_or(0);
-    let total_ticks = crate::app::SPLASH_TICKS;
-    let progress = total_ticks.saturating_sub(ticks_left).min(total_ticks);
     let progress_width = inner.width.saturating_sub(10).clamp(12, 36) as usize;
-    let filled = progress_width * progress / total_ticks.max(1);
-    let progress_bar = format!(
-        "[{}{}]",
-        "=".repeat(filled),
-        " ".repeat(progress_width.saturating_sub(filled))
-    );
+    let progress_bar = match progress_mode {
+        ProgressBarMode::Determinate { progress, total } => {
+            let filled = progress_width * progress / total.max(1);
+            format!(
+                "[{}{}]",
+                "=".repeat(filled),
+                " ".repeat(progress_width.saturating_sub(filled))
+            )
+        }
+        ProgressBarMode::Indeterminate(elapsed) => {
+            let marker_width = progress_width.clamp(6, 12);
+            let travel = progress_width + marker_width;
+            let offset = ((elapsed.as_millis() / 90) as usize) % travel;
+            let mut cells = vec![' '; progress_width];
+            for idx in 0..marker_width {
+                if let Some(cell) = offset.checked_add(idx).and_then(|pos| {
+                    let bar_pos = pos as isize - marker_width as isize;
+                    (bar_pos >= 0 && (bar_pos as usize) < progress_width)
+                        .then_some(bar_pos as usize)
+                }) {
+                    cells[cell] = '=';
+                }
+            }
+            format!("[{}]", cells.into_iter().collect::<String>())
+        }
+    };
 
-    let lang = &app.tool_config.language;
     let is_zh = lang == "zh";
     let subtitle = if is_zh {
         "嵌入式串口监视与烧录工具"
     } else {
         "Embedded serial monitor and flashing tool"
-    };
-    let status = if is_zh {
-        "正在初始化工作区"
-    } else {
-        "Initializing workspace"
-    };
-    let hint = if is_zh {
-        "按任意键跳过"
-    } else {
-        "Press any key to skip"
     };
 
     let chunks = Layout::default()
@@ -355,7 +436,7 @@ fn draw_splash_screen(f: &mut Frame, app: &App) {
                 .bg(splash_panel),
         ),
         Span::styled(
-            format!("{:>3}%", progress * 100 / total_ticks.max(1)),
+            progress_label.unwrap_or_default(),
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.success)
                 .bg(splash_panel)
@@ -377,11 +458,7 @@ fn draw_splash_screen(f: &mut Frame, app: &App) {
     f.render_widget(bar, chunks[4]);
 
     let detail = Paragraph::new(Span::styled(
-        if is_zh {
-            "串口  |  波形  |  烧录  |  配置"
-        } else {
-            "Serial  |  Plotter  |  Flash  |  Config"
-        },
+        detail.unwrap_or(""),
         Style::default()
             .fg(CATPPUCCIN_MOCHA.text_disabled)
             .bg(splash_panel),

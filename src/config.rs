@@ -1,16 +1,20 @@
 use serde::{Deserialize, Serialize};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub const PROJECT_CONFIG_FIELD_COUNT: usize = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct FirmwareImage {
     pub label: String,
     pub path: String,
     pub offset: String,
     pub required: bool,
+    #[serde(default)]
+    pub encrypted: bool,
     pub sha256: Option<String>,
 }
 
@@ -47,8 +51,14 @@ pub struct ProjectConfig {
     pub label_template: String,
     pub qa_test_script: String,
     pub do_not_chg_bin: bool,
+    pub flash_encryption_mode: String,
+    pub merged_offset: String,
     pub images: Vec<FirmwareImage>,
     pub use_merged_flash: bool,
+    #[serde(skip)]
+    pub platformio_project_dir: String,
+    #[serde(skip)]
+    pub factory_dir: String,
 }
 
 impl Default for ProjectConfig {
@@ -83,30 +93,63 @@ impl Default for ProjectConfig {
             mes_endpoint: String::new(),
             label_template: "QR+SN+MAC".to_string(),
             qa_test_script: "LED,BUTTON,WIFI".to_string(),
-            do_not_chg_bin: false,
+            do_not_chg_bin: true,
+            flash_encryption_mode: "disabled".to_string(),
+            merged_offset: "0x0000".to_string(),
             images: Vec::new(),
             use_merged_flash: false,
+            platformio_project_dir: String::new(),
+            factory_dir: String::new(),
         }
     }
 }
 
 impl ProjectConfig {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, String> {
+        let is_toml = path
+            .as_ref()
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"));
+        if !is_toml {
+            return Err(format!(
+                "PioPulse project config must be TOML: {}",
+                path.as_ref().display()
+            ));
+        }
+
         let mut file = File::open(&path).map_err(|e| e.to_string())?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)
             .map_err(|e| e.to_string())?;
-        let mut cfg: ProjectConfig = serde_json::from_str(&contents).map_err(|e| e.to_string())?;
-        
+        let mut cfg: ProjectConfig = toml::from_str(&contents).map_err(|e| e.to_string())?;
+
         let base_dir = path.as_ref().parent().unwrap_or_else(|| Path::new(""));
         cfg.resolve_relative_paths(base_dir);
         cfg.populate_default_images_if_empty(base_dir);
-        
+
         Ok(cfg)
     }
 
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
-        let contents = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let is_toml = path
+            .as_ref()
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"));
+        if !is_toml {
+            return Err(format!(
+                "PioPulse project config must be saved as TOML: {}",
+                path.as_ref().display()
+            ));
+        }
+        let contents = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
+        if let Some(parent) = path.as_ref().parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+            }
+        }
         let mut file = File::create(path).map_err(|e| e.to_string())?;
         file.write_all(contents.as_bytes())
             .map_err(|e| e.to_string())
@@ -119,14 +162,78 @@ impl ProjectConfig {
             return None;
         }
 
-        let content = std::fs::read_to_string(&pio_ini_path).ok()?;
+        Self::detect_platformio_config_from_ini(&pio_ini_path, &current_dir, None).ok()
+    }
 
-        let mut env_name = None;
-        let mut upload_speed = None;
-        let mut board = None;
-        let mut flash_mode = None;
-        let mut flash_freq = None;
-        let mut flash_size = None;
+    pub fn prepare_external_platformio_project<S: AsRef<Path>, I: AsRef<Path>>(
+        source_dir: S,
+        pio_ini_path: I,
+    ) -> Result<Self, String> {
+        let source_dir = source_dir.as_ref();
+        let pio_ini_path = pio_ini_path.as_ref();
+        if !pio_ini_path.exists() {
+            return Err(format!(
+                "External PlatformIO config not found: {}",
+                pio_ini_path.display()
+            ));
+        }
+
+        let build_root = std::env::temp_dir()
+            .join("piopulse-platformio")
+            .join(format!(
+                "{}-{}",
+                source_dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("project"),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| e.to_string())?
+                    .as_nanos()
+            ));
+        fs::create_dir_all(&build_root)
+            .map_err(|e| format!("Failed to create temp PlatformIO project: {}", e))?;
+        fs::copy(pio_ini_path, build_root.join("platformio.ini")).map_err(|e| {
+            format!(
+                "Failed to copy {} to temp PlatformIO project: {}",
+                pio_ini_path.display(),
+                e
+            )
+        })?;
+        copy_source_tree_for_platformio(source_dir, &build_root)?;
+        copy_platformio_referenced_assets(source_dir, pio_ini_path, &build_root)?;
+
+        Self::detect_platformio_config_from_ini(
+            &build_root.join("platformio.ini"),
+            &build_root,
+            Some(source_dir.join("factory")),
+        )
+    }
+
+    pub fn detect_platformio_config_from_ini<P: AsRef<Path>>(
+        pio_ini_path: P,
+        project_dir: P,
+        factory_dir: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        let pio_ini_path = pio_ini_path.as_ref();
+        let project_dir = project_dir.as_ref();
+        if !pio_ini_path.exists() {
+            return Err(format!(
+                "PlatformIO config not found: {}",
+                pio_ini_path.display()
+            ));
+        }
+
+        let content = std::fs::read_to_string(pio_ini_path)
+            .map_err(|e| format!("Failed to read {}: {}", pio_ini_path.display(), e))?;
+
+        let mut current_section = String::new();
+        let mut env_order = Vec::new();
+        let mut default_env = None;
+        let mut env_values: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, String>,
+        > = std::collections::HashMap::new();
 
         for line in content.lines() {
             let line = line.trim();
@@ -135,29 +242,43 @@ impl ProjectConfig {
             }
             if line.starts_with('[') && line.ends_with(']') {
                 let sec = &line[1..line.len() - 1];
+                current_section = sec.to_string();
                 if sec.starts_with("env:") {
-                    env_name = Some(sec["env:".len()..].to_string());
+                    let name = sec["env:".len()..].to_string();
+                    env_order.push(name.clone());
+                    env_values.entry(name).or_default();
                 }
             } else if let Some(idx) = line.find('=') {
                 let key = line[..idx].trim().to_lowercase();
-                let val = line[idx + 1..].trim();
-                if key == "upload_speed" {
-                    upload_speed = Some(val.to_string());
-                } else if key == "board_upload.speed" {
-                    upload_speed = Some(val.to_string());
-                } else if key == "board" {
-                    board = Some(val.to_string());
-                } else if key == "board_build.flash_mode" {
-                    flash_mode = Some(val.to_string());
-                } else if key == "board_build.f_flash" {
-                    flash_freq = parse_flash_frequency(val);
-                } else if key == "board_upload.flash_size" {
-                    flash_size = Some(val.to_string());
+                let val = line[idx + 1..].trim().trim_matches('"').to_string();
+                if current_section == "platformio" && key == "default_envs" {
+                    default_env = parse_first_platformio_env(&val);
+                } else if let Some(env) = current_section.strip_prefix("env:") {
+                    env_values
+                        .entry(env.to_string())
+                        .or_default()
+                        .insert(key, val);
                 }
             }
         }
 
-        let env_name = env_name?;
+        let env_name = default_env
+            .or_else(|| env_order.first().cloned())
+            .ok_or_else(|| "No [env:*] section found in platformio.ini".to_string())?;
+        let selected_values = env_values.get(&env_name);
+        let get_env_value = |key: &str| -> Option<String> {
+            selected_values.and_then(|values| values.get(key).cloned())
+        };
+
+        let upload_speed =
+            get_env_value("upload_speed").or_else(|| get_env_value("board_upload.speed"));
+        let board = get_env_value("board");
+        let flash_mode = get_env_value("board_build.flash_mode");
+        let flash_freq =
+            get_env_value("board_build.f_flash").and_then(|value| parse_flash_frequency(&value));
+        let flash_size = get_env_value("board_upload.flash_size");
+        let custom_bootloader = get_env_value("board_build.arduino.custom_bootloader");
+        let variants_dir = get_env_value("board_build.variants_dir");
         let board = board.unwrap_or_default();
         let board_manifest = read_platformio_board_manifest(&board);
 
@@ -181,12 +302,17 @@ impl ProjectConfig {
             .or_else(|| board_manifest_upload_string(board_manifest.as_ref(), "flash_size"))
             .unwrap_or_else(|| "16MB".to_string());
 
-        let build_dir = current_dir.join(".pio").join("build").join(&env_name);
+        let build_dir = project_dir.join(".pio").join("build").join(&env_name);
 
-        let bootloader_path = build_dir
-            .join("bootloader.bin")
-            .to_string_lossy()
-            .to_string();
+        let bootloader_path = resolve_platformio_bootloader_path(
+            project_dir,
+            &build_dir,
+            board_manifest.as_ref(),
+            custom_bootloader.as_deref(),
+            variants_dir.as_deref(),
+        )
+        .to_string_lossy()
+        .to_string();
         let partitions_path = build_dir
             .join("partitions.bin")
             .to_string_lossy()
@@ -206,13 +332,13 @@ impl ProjectConfig {
             .to_string_lossy()
             .to_string();
 
-        let folder_name = current_dir
+        let folder_name = project_dir
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("PlatformIO Project")
             .to_string();
 
-        Some(ProjectConfig {
+        let mut config = ProjectConfig {
             name: folder_name,
             bootloader_path,
             bootloader_offset: "0x0000".to_string(),
@@ -228,7 +354,175 @@ impl ProjectConfig {
             flash_freq,
             flash_size,
             ..ProjectConfig::default()
-        })
+        };
+        config.platformio_project_dir = project_dir.to_string_lossy().to_string();
+        config.factory_dir = factory_dir
+            .unwrap_or_else(|| project_dir.join("factory"))
+            .to_string_lossy()
+            .to_string();
+
+        Ok(config)
+    }
+
+    pub fn materialize_platformio_factory_package(&self) -> Result<Self, String> {
+        let build_dir = self
+            .platformio_build_dir()
+            .ok_or_else(|| "Could not determine PlatformIO build directory".to_string())?;
+        let project_dir = if self.platformio_project_dir.is_empty() {
+            build_dir
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                .ok_or_else(|| "Could not determine PlatformIO project root".to_string())?
+                .to_path_buf()
+        } else {
+            PathBuf::from(&self.platformio_project_dir)
+        };
+
+        let bootloader_candidates = vec![
+            PathBuf::from(&self.bootloader_path),
+            build_dir.join("bootloader.bin"),
+            build_dir.join("bootloader").join("bootloader.bin"),
+        ];
+        let partitions_candidates = vec![
+            PathBuf::from(&self.partitions_path),
+            build_dir.join("partitions.bin"),
+        ];
+        let firmware_candidates = vec![
+            PathBuf::from(&self.app_path),
+            build_dir.join("firmware.bin"),
+        ];
+
+        let needs_build = existing_path(&bootloader_candidates).is_none()
+            || existing_path(&partitions_candidates).is_none()
+            || existing_path(&firmware_candidates).is_none();
+
+        if needs_build {
+            let output = Command::new("pio")
+                .arg("run")
+                .current_dir(&project_dir)
+                .output()
+                .map_err(|e| format!("Failed to run PlatformIO build: {}", e))?;
+
+            if !output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!(
+                    "PlatformIO build failed with status {}.\n{}\n{}",
+                    output.status, stdout, stderr
+                ));
+            }
+        }
+
+        let bootloader_src = existing_path(&bootloader_candidates).ok_or_else(|| {
+            format!(
+                "bootloader.bin was not produced under {}",
+                build_dir.display()
+            )
+        })?;
+        let partitions_src = existing_path(&partitions_candidates).ok_or_else(|| {
+            format!(
+                "partitions.bin was not produced under {}",
+                build_dir.display()
+            )
+        })?;
+        let boot_app0_src = existing_path(&[PathBuf::from(&self.otadata_path)])
+            .ok_or_else(|| format!("boot_app0.bin was not found at {}", self.otadata_path))?;
+        let firmware_src = existing_path(&firmware_candidates).ok_or_else(|| {
+            format!(
+                "firmware.bin was not produced under {}",
+                build_dir.display()
+            )
+        })?;
+
+        let factory_dir = if self.factory_dir.is_empty() {
+            project_dir.join("factory")
+        } else {
+            PathBuf::from(&self.factory_dir)
+        };
+        fs::create_dir_all(&factory_dir)
+            .map_err(|e| format!("Failed to create {}: {}", factory_dir.display(), e))?;
+
+        copy_factory_file(&bootloader_src, &factory_dir.join("bootloader.bin"))?;
+        copy_factory_file(&partitions_src, &factory_dir.join("partitions.bin"))?;
+        copy_factory_file(&boot_app0_src, &factory_dir.join("boot_app0.bin"))?;
+        copy_factory_file(&firmware_src, &factory_dir.join("firmware.bin"))?;
+        create_merged_flash_image(
+            &[
+                (0x0000, &bootloader_src),
+                (0x8000, &partitions_src),
+                (0xe000, &boot_app0_src),
+                (0x10000, &firmware_src),
+            ],
+            &factory_dir.join("factory_merged.bin"),
+        )?;
+
+        let mut packaged = self.clone();
+        packaged.bootloader_path = "bootloader.bin".to_string();
+        packaged.bootloader_offset = "0x0000".to_string();
+        packaged.partitions_path = "partitions.bin".to_string();
+        packaged.partitions_offset = "0x8000".to_string();
+        packaged.otadata_path = "boot_app0.bin".to_string();
+        packaged.otadata_offset = "0xe000".to_string();
+        packaged.app_path = "firmware.bin".to_string();
+        packaged.app_offset = "0x10000".to_string();
+        packaged.use_merged_flash = false;
+        packaged.merged_offset = "0x0000".to_string();
+        packaged.flash_encryption_mode = if packaged.flash_encryption {
+            "device_runtime".to_string()
+        } else {
+            "disabled".to_string()
+        };
+        packaged.images = vec![
+            FirmwareImage {
+                label: "bootloader".to_string(),
+                path: "bootloader.bin".to_string(),
+                offset: "0x0000".to_string(),
+                required: true,
+                encrypted: false,
+                sha256: None,
+            },
+            FirmwareImage {
+                label: "partitions".to_string(),
+                path: "partitions.bin".to_string(),
+                offset: "0x8000".to_string(),
+                required: true,
+                encrypted: false,
+                sha256: None,
+            },
+            FirmwareImage {
+                label: "boot_app0".to_string(),
+                path: "boot_app0.bin".to_string(),
+                offset: "0xe000".to_string(),
+                required: true,
+                encrypted: false,
+                sha256: None,
+            },
+            FirmwareImage {
+                label: "firmware".to_string(),
+                path: "firmware.bin".to_string(),
+                offset: "0x10000".to_string(),
+                required: true,
+                encrypted: false,
+                sha256: None,
+            },
+            FirmwareImage {
+                label: "factory_merged".to_string(),
+                path: "factory_merged.bin".to_string(),
+                offset: packaged.merged_offset.clone(),
+                required: true,
+                encrypted: false,
+                sha256: None,
+            },
+        ];
+
+        let manifest_path = factory_dir.join("piopulse.toml");
+        packaged.save_to_file(&manifest_path)?;
+        ProjectConfig::load_from_file(&manifest_path)
+    }
+
+    fn platformio_build_dir(&self) -> Option<PathBuf> {
+        Path::new(&self.app_path).parent().map(Path::to_path_buf)
     }
 
     pub fn get_field(&self, index: usize) -> String {
@@ -339,20 +633,7 @@ impl ProjectConfig {
             return;
         }
 
-        // Try to look for factory_merged.bin
-        let merged_path = base_dir.join("factory_merged.bin");
-        if merged_path.exists() {
-            self.images.push(FirmwareImage {
-                label: "merged".to_string(),
-                path: merged_path.to_string_lossy().to_string(),
-                offset: "0x0000".to_string(),
-                required: true,
-                sha256: None,
-            });
-            return;
-        }
-
-        // Otherwise check default segmented names
+        // Check default segmented names
         let seg_files = [
             ("bootloader", "bootloader.bin", "0x0000"),
             ("partitions", "partitions.bin", "0x8000"),
@@ -369,10 +650,25 @@ impl ProjectConfig {
                     path: p.to_string_lossy().to_string(),
                     offset: offset.to_string(),
                     required: true,
+                    encrypted: false,
                     sha256: None,
                 });
                 found_any = true;
             }
+        }
+
+        // Add factory_merged.bin when present. It is a complete flash image written at 0x0000.
+        let merged_path = base_dir.join("factory_merged.bin");
+        if merged_path.exists() {
+            self.images.push(FirmwareImage {
+                label: "factory_merged".to_string(),
+                path: merged_path.to_string_lossy().to_string(),
+                offset: self.merged_offset.clone(),
+                required: true,
+                encrypted: false,
+                sha256: None,
+            });
+            found_any = true;
         }
 
         if found_any {
@@ -386,6 +682,7 @@ impl ProjectConfig {
                 path: self.bootloader_path.clone(),
                 offset: self.bootloader_offset.clone(),
                 required: true,
+                encrypted: false,
                 sha256: None,
             });
         }
@@ -395,6 +692,7 @@ impl ProjectConfig {
                 path: self.partitions_path.clone(),
                 offset: self.partitions_offset.clone(),
                 required: true,
+                encrypted: false,
                 sha256: None,
             });
         }
@@ -404,6 +702,7 @@ impl ProjectConfig {
                 path: self.otadata_path.clone(),
                 offset: self.otadata_offset.clone(),
                 required: true,
+                encrypted: false,
                 sha256: None,
             });
         }
@@ -413,6 +712,7 @@ impl ProjectConfig {
                 path: self.app_path.clone(),
                 offset: self.app_offset.clone(),
                 required: true,
+                encrypted: false,
                 sha256: None,
             });
         }
@@ -427,7 +727,10 @@ impl ProjectConfig {
         if chip_lower != "auto" {
             // A basic check to see if it starts with esp32
             if !chip_lower.starts_with("esp32") && !chip_lower.starts_with("esp") {
-                errors.push(format!("Unsupported target chip type: '{}'", self.chip_type));
+                errors.push(format!(
+                    "Unsupported target chip type: '{}'",
+                    self.chip_type
+                ));
             }
         }
 
@@ -480,7 +783,8 @@ impl ProjectConfig {
                         if !expected_sha.trim().is_empty() {
                             match compute_file_sha256(&img.path) {
                                 Ok(computed) => {
-                                    let matches = computed.eq_ignore_ascii_case(expected_sha.trim());
+                                    let matches =
+                                        computed.eq_ignore_ascii_case(expected_sha.trim());
                                     sha256_match = Some(matches);
                                     if !matches {
                                         let err_msg = format!(
@@ -492,7 +796,10 @@ impl ProjectConfig {
                                     }
                                 }
                                 Err(e) => {
-                                    errors.push(format!("Failed to read file '{}' for SHA256 check: {}", img.label, e));
+                                    errors.push(format!(
+                                        "Failed to read file '{}' for SHA256 check: {}",
+                                        img.label, e
+                                    ));
                                     sha256_match = Some(false);
                                     img_error = Some("SHA256 calculation failed".to_string());
                                 }
@@ -500,7 +807,8 @@ impl ProjectConfig {
                         }
                     }
                 } else if img.required {
-                    let err_msg = format!("Required file '{}' not found at: {}", img.label, img.path);
+                    let err_msg =
+                        format!("Required file '{}' not found at: {}", img.label, img.path);
                     errors.push(err_msg.clone());
                     img_error = Some("File not found".to_string());
                 }
@@ -537,6 +845,7 @@ impl ProjectConfig {
                     path: path.to_string(),
                     offset: offset.to_string(),
                     required: true,
+                    encrypted: false,
                     sha256: None,
                 });
             }
@@ -571,6 +880,281 @@ impl ProjectConfig {
             }
         }
     }
+}
+
+fn existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates.iter().find(|path| path.exists()).cloned()
+}
+
+fn copy_factory_file(src: &Path, dest: &Path) -> Result<(), String> {
+    fs::copy(src, dest).map(|_| ()).map_err(|e| {
+        format!(
+            "Failed to copy {} to {}: {}",
+            src.display(),
+            dest.display(),
+            e
+        )
+    })
+}
+
+pub fn create_merged_flash_image(segments: &[(usize, &Path)], dest: &Path) -> Result<(), String> {
+    let mut loaded_segments = Vec::new();
+    let mut total_len = 0usize;
+
+    for (offset, path) in segments {
+        let data =
+            fs::read(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+        total_len = total_len.max(offset.saturating_add(data.len()));
+        loaded_segments.push((*offset, data));
+    }
+
+    let mut merged = vec![0xff; total_len];
+    for (offset, data) in loaded_segments {
+        let end = offset + data.len();
+        merged[offset..end].copy_from_slice(&data);
+    }
+
+    fs::write(dest, merged).map_err(|e| format!("Failed to write {}: {}", dest.display(), e))
+}
+
+fn copy_source_tree_for_platformio(source_dir: &Path, dest_dir: &Path) -> Result<(), String> {
+    let mut copied_under_src = false;
+    copy_source_tree_recursive(source_dir, source_dir, dest_dir, &mut copied_under_src)?;
+
+    if !copied_under_src {
+        let src_dest = dest_dir.join("src");
+        let include_dest = dest_dir.join("include");
+        for entry in fs::read_dir(source_dir)
+            .map_err(|e| format!("Failed to read source dir {}: {}", source_dir.display(), e))?
+        {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if is_platformio_compile_source(&path) {
+                fs::create_dir_all(&src_dest).map_err(|e| e.to_string())?;
+                fs::copy(&path, src_dest.join(entry.file_name())).map_err(|e| {
+                    format!("Failed to copy {} into temp src: {}", path.display(), e)
+                })?;
+            } else if is_platformio_header(&path) {
+                fs::create_dir_all(&include_dest).map_err(|e| e.to_string())?;
+                fs::copy(&path, include_dest.join(entry.file_name())).map_err(|e| {
+                    format!("Failed to copy {} into temp include: {}", path.display(), e)
+                })?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn copy_source_tree_recursive(
+    source_root: &Path,
+    current: &Path,
+    dest_root: &Path,
+    copied_under_src: &mut bool,
+) -> Result<(), String> {
+    for entry in fs::read_dir(current)
+        .map_err(|e| format!("Failed to read source dir {}: {}", current.display(), e))?
+    {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if path.is_dir() {
+            if matches!(
+                name_str.as_ref(),
+                ".git" | ".pio" | "factory" | "target" | ".agents" | ".codex"
+            ) {
+                continue;
+            }
+            copy_source_tree_recursive(source_root, &path, dest_root, copied_under_src)?;
+            continue;
+        }
+
+        if !path.is_file() || !is_platformio_source_asset(&path) {
+            continue;
+        }
+
+        let relative = path.strip_prefix(source_root).map_err(|e| e.to_string())?;
+        if relative
+            .components()
+            .next()
+            .is_some_and(|part| part.as_os_str() == "src")
+        {
+            *copied_under_src = true;
+        }
+        let dest = dest_root.join(relative);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::copy(&path, &dest).map_err(|e| {
+            format!(
+                "Failed to copy {} to {}: {}",
+                path.display(),
+                dest.display(),
+                e
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn is_platformio_source_asset(path: &Path) -> bool {
+    is_platformio_compile_source(path) || is_platformio_header(path)
+}
+
+fn is_platformio_compile_source(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "c" | "cc" | "cpp" | "cxx" | "ino" | "s"
+            )
+        })
+}
+
+fn is_platformio_header(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "h" | "hh" | "hpp" | "hxx"
+            )
+        })
+}
+
+fn copy_platformio_referenced_assets(
+    source_dir: &Path,
+    pio_ini_path: &Path,
+    dest_dir: &Path,
+) -> Result<(), String> {
+    let content = fs::read_to_string(pio_ini_path)
+        .map_err(|e| format!("Failed to read {}: {}", pio_ini_path.display(), e))?;
+
+    for raw_path in referenced_platformio_asset_paths(&content) {
+        let source_path = source_dir.join(&raw_path);
+        if !source_path.exists() {
+            continue;
+        }
+        copy_path_into_temp_project(&source_path, &dest_dir.join(&raw_path))?;
+    }
+
+    Ok(())
+}
+
+fn referenced_platformio_asset_paths(content: &str) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut current_section = String::new();
+    let mut selected_env = None;
+    let mut env_order = Vec::new();
+    let mut env_values: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, String>,
+    > = std::collections::HashMap::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            current_section = line[1..line.len() - 1].to_string();
+            if let Some(env) = current_section.strip_prefix("env:") {
+                env_order.push(env.to_string());
+                env_values.entry(env.to_string()).or_default();
+            }
+            continue;
+        }
+
+        let Some(idx) = line.find('=') else {
+            continue;
+        };
+        let key = line[..idx].trim().to_lowercase();
+        let value = line[idx + 1..].trim().trim_matches('"').to_string();
+        if current_section == "platformio" && key == "default_envs" {
+            selected_env = parse_first_platformio_env(&value);
+        } else if let Some(env) = current_section.strip_prefix("env:") {
+            env_values
+                .entry(env.to_string())
+                .or_default()
+                .insert(key, value);
+        }
+    }
+
+    let env_name = selected_env.or_else(|| env_order.first().cloned());
+    let Some(values) = env_name.and_then(|env| env_values.get(&env).cloned()) else {
+        return paths;
+    };
+
+    let direct_keys = [
+        "board_build.partitions",
+        "board_build.variants_dir",
+        "board_build.embed_txtfiles",
+        "board_build.embed_files",
+        "board_build.filesystem",
+    ];
+    for key in direct_keys {
+        if let Some(value) = values.get(key) {
+            push_platformio_asset_paths(&mut paths, value);
+        }
+    }
+
+    let variants_dir = values
+        .get("board_build.variants_dir")
+        .cloned()
+        .unwrap_or_else(|| "variants".to_string());
+    if let Some(custom_bootloader) = values.get("board_build.arduino.custom_bootloader") {
+        paths.push(PathBuf::from(&variants_dir));
+        paths.push(PathBuf::from(custom_bootloader));
+    }
+
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn push_platformio_asset_paths(paths: &mut Vec<PathBuf>, value: &str) {
+    for item in value
+        .split(|ch| ch == ',' || ch == '\n' || ch == ' ' || ch == '\t')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        if item.starts_with('$') || item.starts_with('-') {
+            continue;
+        }
+        paths.push(PathBuf::from(item));
+    }
+}
+
+fn copy_path_into_temp_project(src: &Path, dest: &Path) -> Result<(), String> {
+    if src.is_dir() {
+        for entry in
+            fs::read_dir(src).map_err(|e| format!("Failed to read {}: {}", src.display(), e))?
+        {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let child_src = entry.path();
+            let child_dest = dest.join(entry.file_name());
+            copy_path_into_temp_project(&child_src, &child_dest)?;
+        }
+        return Ok(());
+    }
+
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::copy(src, dest).map(|_| ()).map_err(|e| {
+        format!(
+            "Failed to copy {} to {}: {}",
+            src.display(),
+            dest.display(),
+            e
+        )
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -655,6 +1239,58 @@ fn board_manifest_upload_speed(manifest: Option<&serde_json::Value>) -> Option<u
         .and_then(|value| u32::try_from(value).ok())
 }
 
+fn resolve_platformio_bootloader_path(
+    project_dir: &Path,
+    build_dir: &Path,
+    board_manifest: Option<&serde_json::Value>,
+    custom_bootloader: Option<&str>,
+    variants_dir: Option<&str>,
+) -> PathBuf {
+    let fallback = build_dir.join("bootloader.bin");
+    let Some(custom_bootloader) = custom_bootloader
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return fallback;
+    };
+
+    let custom_path = Path::new(custom_bootloader);
+    if custom_path.is_absolute() && custom_path.is_file() {
+        return custom_path.to_path_buf();
+    }
+
+    let variant = board_manifest_build_string(board_manifest, "variant");
+    let variants_dir = variants_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("variants");
+    let variants_root = project_dir.join(variants_dir);
+
+    let mut candidates = Vec::new();
+    candidates.push(project_dir.join(custom_bootloader));
+    if let Some(variant) = variant.as_deref() {
+        candidates.push(variants_root.join(variant).join(custom_bootloader));
+    }
+    candidates.push(variants_root.join(custom_bootloader));
+
+    for candidate in candidates {
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(&variants_root) {
+        for entry in entries.flatten() {
+            let path = entry.path().join(custom_bootloader);
+            if path.is_file() {
+                return path;
+            }
+        }
+    }
+
+    fallback
+}
+
 fn chip_type_from_board(board: &str, manifest: Option<&serde_json::Value>) -> String {
     let candidates = [
         Some(board),
@@ -736,6 +1372,14 @@ fn parse_flash_frequency(value: &str) -> Option<String> {
     None
 }
 
+fn parse_first_platformio_env(value: &str) -> Option<String> {
+    value
+        .split(|ch| ch == ',' || ch == ' ' || ch == '\t')
+        .map(str::trim)
+        .find(|env| !env.is_empty())
+        .map(ToString::to_string)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolConfig {
     pub language: String,
@@ -753,7 +1397,7 @@ impl ToolConfig {
     pub fn load() -> Self {
         let path = Self::get_path();
         if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(config) = serde_json::from_str::<ToolConfig>(&content) {
+            if let Ok(config) = toml::from_str::<ToolConfig>(&content) {
                 return config;
             }
         }
@@ -765,18 +1409,18 @@ impl ToolConfig {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let content = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let content = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
         std::fs::write(&path, content).map_err(|e| e.to_string())
     }
 
     fn get_path() -> std::path::PathBuf {
         if cfg!(test) {
-            return std::env::temp_dir().join(".piopulse_tool_settings_test.json");
+            return std::env::temp_dir().join(".piopulse_tool_settings_test.toml");
         }
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| "/home/waya".to_string());
-        std::path::Path::new(&home).join(".piopulse_tool_settings.json")
+        std::path::Path::new(&home).join(".piopulse_tool_settings.toml")
     }
 }
 
@@ -802,6 +1446,157 @@ mod tests {
     }
 
     #[test]
+    fn test_toml_project_config_loads_relative_images() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "piopulse_toml_config_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("piopulse.toml");
+        let toml_config = r#"
+name = "Factory Package"
+chip_type = "ESP32-S3"
+baud_rate = 921600
+flash_mode = "dio"
+flash_freq = "80m"
+flash_size = "16MB"
+do_not_chg_bin = true
+
+[[images]]
+label = "firmware"
+path = "firmware.bin"
+offset = "0x10000"
+required = true
+"#;
+
+        std::fs::write(&config_path, toml_config).unwrap();
+        let config = ProjectConfig::load_from_file(&config_path).unwrap();
+
+        assert_eq!(config.name, "Factory Package");
+        assert!(config.do_not_chg_bin);
+        assert_eq!(config.images.len(), 1);
+        assert_eq!(
+            config.images[0].path,
+            temp_dir.join("firmware.bin").to_string_lossy().to_string()
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_materialize_platformio_factory_package_from_build_outputs() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "piopulse_factory_package_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let project_dir = temp_dir.join("firmware_project");
+        let build_dir = project_dir.join(".pio").join("build").join("prod");
+        std::fs::create_dir_all(&build_dir).unwrap();
+
+        std::fs::write(build_dir.join("bootloader.bin"), [0x01]).unwrap();
+        std::fs::write(build_dir.join("partitions.bin"), [0x02]).unwrap();
+        std::fs::write(build_dir.join("firmware.bin"), [0x03]).unwrap();
+        let boot_app0 = temp_dir.join("boot_app0.bin");
+        std::fs::write(&boot_app0, [0x04]).unwrap();
+
+        let mut config = ProjectConfig::default();
+        config.name = "Factory Project".to_string();
+        config.bootloader_path = build_dir
+            .join("bootloader.bin")
+            .to_string_lossy()
+            .to_string();
+        config.partitions_path = build_dir
+            .join("partitions.bin")
+            .to_string_lossy()
+            .to_string();
+        config.otadata_path = boot_app0.to_string_lossy().to_string();
+        config.app_path = build_dir.join("firmware.bin").to_string_lossy().to_string();
+
+        let packaged = config.materialize_platformio_factory_package().unwrap();
+        let factory_dir = project_dir.join("factory");
+
+        assert!(factory_dir.join("piopulse.toml").exists());
+        assert!(factory_dir.join("bootloader.bin").exists());
+        assert!(factory_dir.join("partitions.bin").exists());
+        assert!(factory_dir.join("boot_app0.bin").exists());
+        assert!(factory_dir.join("firmware.bin").exists());
+        assert!(factory_dir.join("factory_merged.bin").exists());
+        assert_eq!(
+            packaged.app_path,
+            factory_dir
+                .join("firmware.bin")
+                .to_string_lossy()
+                .to_string()
+        );
+        assert_eq!(packaged.images.len(), 5);
+        let merged = packaged
+            .images
+            .iter()
+            .find(|img| img.label == "factory_merged")
+            .unwrap();
+        assert_eq!(merged.offset, "0x0000");
+        assert_eq!(
+            merged.path,
+            factory_dir.join("factory_merged.bin").to_string_lossy()
+        );
+        assert!(!merged.encrypted);
+        assert_eq!(packaged.merged_offset, "0x0000");
+        assert_eq!(packaged.flash_encryption_mode, "disabled");
+
+        let merged_data = std::fs::read(factory_dir.join("factory_merged.bin")).unwrap();
+        assert_eq!(merged_data[0x0000], 0x01);
+        assert_eq!(merged_data[0x8000], 0x02);
+        assert_eq!(merged_data[0xe000], 0x04);
+        assert_eq!(merged_data[0x10000], 0x03);
+        assert_eq!(merged_data[0x0001], 0xff);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_platformio_custom_bootloader_resolves_from_project_variants() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "piopulse_custom_bootloader_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let project_dir = temp_dir.join("firmware_project");
+        let bootloader = project_dir
+            .join("variants")
+            .join("esp32_s3r8n16")
+            .join("bootloader_dio_40m.bin");
+        std::fs::create_dir_all(bootloader.parent().unwrap()).unwrap();
+        std::fs::write(&bootloader, [0x01]).unwrap();
+
+        let build_dir = project_dir.join(".pio").join("build").join("prod");
+        let manifest = serde_json::json!({
+            "build": {
+                "variant": "esp32_s3r8n16"
+            }
+        });
+
+        let resolved = resolve_platformio_bootloader_path(
+            &project_dir,
+            &build_dir,
+            Some(&manifest),
+            Some("bootloader_dio_40m.bin"),
+            Some("variants"),
+        );
+
+        assert_eq!(resolved, bootloader);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn test_platformio_board_name_detects_hyphenated_esp32c3() {
         assert_eq!(chip_type_from_board("esp32-c3-devkitm-1", None), "ESP32-C3");
     }
@@ -810,6 +1605,37 @@ mod tests {
     fn test_platformio_flash_frequency_from_hz_literal() {
         assert_eq!(parse_flash_frequency("40000000L"), Some("40m".to_string()));
         assert_eq!(parse_flash_frequency("80000000L"), Some("80m".to_string()));
+    }
+
+    #[test]
+    fn test_platformio_default_envs_parser_uses_first_env() {
+        assert_eq!(
+            parse_first_platformio_env("esp32s3_prod, esp32s3_debug"),
+            Some("esp32s3_prod".to_string())
+        );
+        assert_eq!(
+            parse_first_platformio_env(" esp32c3 "),
+            Some("esp32c3".to_string())
+        );
+        assert_eq!(parse_first_platformio_env(""), None);
+    }
+
+    #[test]
+    fn test_platformio_referenced_assets_include_partitions_and_variants() {
+        let content = r#"
+[platformio]
+default_envs = prod
+
+[env:prod]
+board_build.partitions = partitions.csv
+board_build.variants_dir = variants
+board_build.arduino.custom_bootloader = bootloader_dio_80m.bin
+"#;
+
+        let assets = referenced_platformio_asset_paths(content);
+        assert!(assets.contains(&PathBuf::from("partitions.csv")));
+        assert!(assets.contains(&PathBuf::from("variants")));
+        assert!(assets.contains(&PathBuf::from("bootloader_dio_80m.bin")));
     }
 
     #[test]
@@ -834,6 +1660,7 @@ mod tests {
                 path: "".to_string(),
                 offset: "0x0000".to_string(),
                 required: true,
+                encrypted: false,
                 sha256: None,
             },
             FirmwareImage {
@@ -841,24 +1668,29 @@ mod tests {
                 path: "".to_string(),
                 offset: "0x0000".to_string(),
                 required: false,
+                encrypted: false,
                 sha256: None,
-            }
+            },
         ];
 
         let (results, errors) = config.validate_manifest();
         assert_eq!(results.len(), 2);
-        
-        assert!(errors.iter().any(|e| e.contains("Required image") && e.contains("empty")));
+
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Required image") && e.contains("empty"))
+        );
         assert!(errors.iter().any(|e| e.contains("Duplicate offset")));
     }
 
     #[test]
     fn test_sha256_validation() {
         use std::io::Write;
-        
+
         let temp_dir = std::env::temp_dir();
         let file_path = temp_dir.join("piopulse_test_file.bin");
-        
+
         let mut file = File::create(&file_path).unwrap();
         file.write_all(b"piopulse_test_data").unwrap();
         drop(file);
@@ -873,6 +1705,7 @@ mod tests {
                 path: file_path.to_string_lossy().to_string(),
                 offset: "0x0000".to_string(),
                 required: true,
+                encrypted: false,
                 sha256: Some(correct_sha256.to_string()),
             },
             FirmwareImage {
@@ -880,17 +1713,18 @@ mod tests {
                 path: file_path.to_string_lossy().to_string(),
                 offset: "0x1000".to_string(),
                 required: true,
+                encrypted: false,
                 sha256: Some(incorrect_sha256.to_string()),
-            }
+            },
         ];
 
         let (results, errors) = config.validate_manifest();
-        
+
         assert_eq!(results[0].sha256_match, Some(true));
         assert_eq!(results[1].sha256_match, Some(false));
-        
+
         assert!(errors.iter().any(|e| e.contains("SHA256 mismatch")));
-        
+
         let _ = std::fs::remove_file(file_path);
     }
 
@@ -904,13 +1738,14 @@ mod tests {
         config.flash_size = "16MB".to_string();
         config.nvs_offset = "0x9000".to_string();
         config.do_not_chg_bin = false;
-        
+
         config.images = vec![
             FirmwareImage {
                 label: "bootloader".to_string(),
                 path: "bootloader.bin".to_string(),
                 offset: "0x0000".to_string(),
                 required: true,
+                encrypted: false,
                 sha256: None,
             },
             FirmwareImage {
@@ -918,12 +1753,17 @@ mod tests {
                 path: "factory_merged.bin".to_string(),
                 offset: "0x0000".to_string(),
                 required: true,
+                encrypted: false,
                 sha256: None,
-            }
+            },
         ];
 
         let cmd_segmented = crate::worker::generate_esptool_command("/dev/ttyUSB0", &config, false);
-        assert!(cmd_segmented.contains("esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 921600 write_flash"));
+        assert!(
+            cmd_segmented.contains(
+                "esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 921600 write_flash"
+            )
+        );
         assert!(cmd_segmented.contains("--flash_mode dio"));
         assert!(cmd_segmented.contains("--flash_freq 80m"));
         assert!(cmd_segmented.contains("--flash_size 16MB"));
@@ -952,17 +1792,31 @@ mod tests {
         assert_eq!(config.app_path, "new_firmware.bin");
 
         // The images list should now have one entry for firmware
-        let fw_img = config.images.iter().find(|img| img.label == "firmware").unwrap();
+        let fw_img = config
+            .images
+            .iter()
+            .find(|img| img.label == "firmware")
+            .unwrap();
         assert_eq!(fw_img.path, "new_firmware.bin");
         assert_eq!(fw_img.offset, "0x10000");
 
         // Change offset
         config.set_field(12, "0x20000".to_string());
-        let fw_img2 = config.images.iter().find(|img| img.label == "firmware").unwrap();
+        let fw_img2 = config
+            .images
+            .iter()
+            .find(|img| img.label == "firmware")
+            .unwrap();
         assert_eq!(fw_img2.offset, "0x20000");
 
         // Clear path should remove it from images
         config.set_field(13, "".to_string());
-        assert!(config.images.iter().find(|img| img.label == "firmware").is_none());
+        assert!(
+            config
+                .images
+                .iter()
+                .find(|img| img.label == "firmware")
+                .is_none()
+        );
     }
 }

@@ -1,7 +1,7 @@
 use crate::config::ProjectConfig;
+use serialport::SerialPort;
 use std::borrow::Cow;
 use std::fs::File;
-use serialport::SerialPort;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,6 +63,13 @@ pub enum WorkerMessage {
         success: bool,
         error_msg: Option<String>,
         mac: Option<String>,
+    },
+    AutoProbeResult {
+        port: String,
+        present: bool,
+        chip: Option<String>,
+        mac: Option<String>,
+        error_msg: Option<String>,
     },
     Log {
         port: String,
@@ -133,6 +140,42 @@ pub fn start_flashing_task(port: String, config: Arc<ProjectConfig>, tx: Sender<
                     .await;
             }
         }
+    });
+}
+
+pub fn start_auto_probe_task(port: String, config: Arc<ProjectConfig>, tx: Sender<WorkerMessage>) {
+    tokio::spawn(async move {
+        let port_clone = port.clone();
+        let config_clone = config.clone();
+        let result =
+            tokio::task::spawn_blocking(move || probe_esp32_presence(&port_clone, &config_clone))
+                .await;
+
+        let message = match result {
+            Ok(Ok((chip, mac))) => WorkerMessage::AutoProbeResult {
+                port,
+                present: true,
+                chip: Some(chip),
+                mac: Some(mac),
+                error_msg: None,
+            },
+            Ok(Err(e)) => WorkerMessage::AutoProbeResult {
+                port,
+                present: false,
+                chip: None,
+                mac: None,
+                error_msg: Some(e),
+            },
+            Err(e) => WorkerMessage::AutoProbeResult {
+                port,
+                present: false,
+                chip: None,
+                mac: None,
+                error_msg: Some(format!("Auto probe task panicked: {}", e)),
+            },
+        };
+
+        let _ = tx.send(message).await;
     });
 }
 
@@ -407,6 +450,75 @@ fn is_esp_usb_serial_jtag(vid: Option<u16>, pid: Option<u16>) -> bool {
     vid == Some(0x303a) && pid == Some(0x1001)
 }
 
+fn serial_port_info_for(port_name: &str) -> serialport::UsbPortInfo {
+    let ports = get_available_serial_ports();
+    ports
+        .into_iter()
+        .find(|p| p.name == port_name)
+        .map(|p| serialport::UsbPortInfo {
+            vid: p.vid.unwrap_or(0),
+            pid: p.pid.unwrap_or(0),
+            serial_number: None,
+            manufacturer: p.manufacturer,
+            product: p.product,
+        })
+        .unwrap_or_else(|| serialport::UsbPortInfo {
+            vid: 0,
+            pid: 0,
+            serial_number: None,
+            manufacturer: None,
+            product: None,
+        })
+}
+
+fn reset_before_for_port(port_info: &serialport::UsbPortInfo) -> ResetBeforeOperation {
+    if is_esp_usb_serial_jtag(Some(port_info.vid), Some(port_info.pid)) {
+        ResetBeforeOperation::UsbReset
+    } else {
+        ResetBeforeOperation::DefaultReset
+    }
+}
+
+fn probe_esp32_presence(
+    port_name: &str,
+    config: &ProjectConfig,
+) -> Result<(String, String), String> {
+    let port = serialport::new(port_name, config.baud_rate)
+        .timeout(Duration::from_millis(800))
+        .open_native()
+        .map_err(|e| format!("Auto probe could not open {}: {}", port_name, e))?;
+
+    let port_info = serial_port_info_for(port_name);
+    let connection = Connection::new(
+        port,
+        port_info.clone(),
+        ResetAfterOperation::HardReset,
+        reset_before_for_port(&port_info),
+        config.baud_rate,
+    );
+
+    let chip_target = map_chip_type(&config.chip_type);
+    let mut flasher = Flasher::connect(
+        connection,
+        true,
+        true,
+        false,
+        chip_target,
+        Some(config.baud_rate),
+    )
+    .map_err(|e| format!("Auto probe did not detect ESP bootloader: {}", e))?;
+
+    let device_info = flasher
+        .device_info()
+        .map_err(|e| format!("Auto probe could not read device info: {}", e))?;
+    Ok((
+        device_info.chip.to_string(),
+        device_info
+            .mac_address
+            .unwrap_or_else(|| "Unknown".to_string()),
+    ))
+}
+
 pub struct Esp32SerialBackend;
 
 impl FlasherBackend for Esp32SerialBackend {
@@ -438,36 +550,15 @@ impl FlasherBackend for Esp32SerialBackend {
             .open_native()
             .map_err(|e| format!("Failed to open port {}: {}", port_name, e))?;
 
-        let ports = get_available_serial_ports();
-        let port_info = ports
-            .into_iter()
-            .find(|p| p.name == port_name)
-            .map(|p| serialport::UsbPortInfo {
-                vid: p.vid.unwrap_or(0),
-                pid: p.pid.unwrap_or(0),
-                serial_number: None,
-                manufacturer: p.manufacturer,
-                product: p.product,
-            })
-            .unwrap_or_else(|| serialport::UsbPortInfo {
-                vid: 0,
-                pid: 0,
-                serial_number: None,
-                manufacturer: None,
-                product: None,
-            });
+        let port_info = serial_port_info_for(&port_name);
 
-        let native_usb_serial_jtag =
-            is_esp_usb_serial_jtag(Some(port_info.vid), Some(port_info.pid));
-        let before_reset = if native_usb_serial_jtag {
+        let before_reset = reset_before_for_port(&port_info);
+        if before_reset == ResetBeforeOperation::UsbReset {
             let _ = tx.blocking_send(WorkerMessage::Log {
                 port: port_name.clone(),
                 message: "Detected Espressif USB-Serial-JTAG, using native USB reset.".to_string(),
             });
-            ResetBeforeOperation::UsbReset
-        } else {
-            ResetBeforeOperation::DefaultReset
-        };
+        }
 
         let connection = Connection::new(
             port,
@@ -546,18 +637,20 @@ impl FlasherBackend for Esp32SerialBackend {
         if !config.images.is_empty() {
             // Filter images based on whether we are in merged or segmented mode
             for img in &config.images {
-                let is_merged_img = img.label.contains("merged") || img.path.ends_with("factory_merged.bin") || img.path.ends_with("merged.bin");
-                
+                let is_merged_img = img.label.contains("merged")
+                    || img.path.ends_with("factory_merged.bin")
+                    || img.path.ends_with("merged.bin");
+
                 if config.use_merged_flash == is_merged_img {
                     if !img.path.is_empty() {
                         let offset = parse_offset(&img.offset)?;
                         let mut data = load_and_pad_file(&img.path)?;
-                        
+
                         // Mutate bootloader / merged header if do_not_chg_bin is false AND the offset is bootloader offset (usually 0x0 or 0x1000)
                         if !config.do_not_chg_bin && (offset == 0 || offset == 0x1000) {
                             modify_bin_header(&mut data, config);
                         }
-                        
+
                         segments.push(Segment {
                             addr: offset,
                             data: Cow::Owned(data),
@@ -917,7 +1010,7 @@ fn modify_bin_header(data: &mut [u8], config: &ProjectConfig) {
         "dout" => 3,
         _ => return, // Keep unmodified if unrecognized
     };
-    
+
     // Parse flash size
     let size_val = match config.flash_size.to_uppercase().as_str() {
         "1MB" => 0,
@@ -930,7 +1023,7 @@ fn modify_bin_header(data: &mut [u8], config: &ProjectConfig) {
         "128MB" => 7,
         _ => return,
     };
-    
+
     // Parse flash frequency
     let chip_lower = config.chip_type.to_lowercase();
     let freq_val = if chip_lower.contains("h2") {
@@ -958,12 +1051,16 @@ fn modify_bin_header(data: &mut [u8], config: &ProjectConfig) {
             _ => return,
         }
     };
-    
+
     data[2] = mode_byte;
     data[3] = (size_val << 4) | freq_val;
 }
 
-pub fn generate_esptool_command(port: &str, config: &ProjectConfig, use_merged_flash: bool) -> String {
+pub fn generate_esptool_command(
+    port: &str,
+    config: &ProjectConfig,
+    use_merged_flash: bool,
+) -> String {
     let chip = match config.chip_type.to_lowercase().as_str() {
         "esp32-s3" => "esp32s3",
         "esp32-c3" => "esp32c3",
@@ -974,20 +1071,34 @@ pub fn generate_esptool_command(port: &str, config: &ProjectConfig, use_merged_f
         "esp32" => "esp32",
         _ => "auto",
     };
-    
-    let mode = if config.do_not_chg_bin { "keep" } else { &config.flash_mode };
-    let freq = if config.do_not_chg_bin { "keep" } else { &config.flash_freq };
-    let size = if config.do_not_chg_bin { "keep" } else { &config.flash_size };
-    
+
+    let mode = if config.do_not_chg_bin {
+        "keep"
+    } else {
+        &config.flash_mode
+    };
+    let freq = if config.do_not_chg_bin {
+        "keep"
+    } else {
+        &config.flash_freq
+    };
+    let size = if config.do_not_chg_bin {
+        "keep"
+    } else {
+        &config.flash_size
+    };
+
     let mut cmd = format!(
         "esptool.py --chip {} --port {} --baud {} write_flash -z --flash_mode {} --flash_freq {} --flash_size {}",
         chip, port, config.baud_rate, mode, freq, size
     );
-    
+
     // Add images
     if !config.images.is_empty() {
         for img in &config.images {
-            let is_merged_img = img.label.contains("merged") || img.path.ends_with("factory_merged.bin") || img.path.ends_with("merged.bin");
+            let is_merged_img = img.label.contains("merged")
+                || img.path.ends_with("factory_merged.bin")
+                || img.path.ends_with("merged.bin");
             if use_merged_flash == is_merged_img {
                 if !img.path.is_empty() {
                     cmd.push_str(&format!(" {} {}", img.offset, img.path));
@@ -997,24 +1108,33 @@ pub fn generate_esptool_command(port: &str, config: &ProjectConfig, use_merged_f
     } else {
         // Legacy
         if !config.bootloader_path.is_empty() {
-            cmd.push_str(&format!(" {} {}", config.bootloader_offset, config.bootloader_path));
+            cmd.push_str(&format!(
+                " {} {}",
+                config.bootloader_offset, config.bootloader_path
+            ));
         }
         if !config.partitions_path.is_empty() {
-            cmd.push_str(&format!(" {} {}", config.partitions_offset, config.partitions_path));
+            cmd.push_str(&format!(
+                " {} {}",
+                config.partitions_offset, config.partitions_path
+            ));
         }
         if !config.otadata_path.is_empty() {
-            cmd.push_str(&format!(" {} {}", config.otadata_offset, config.otadata_path));
+            cmd.push_str(&format!(
+                " {} {}",
+                config.otadata_offset, config.otadata_path
+            ));
         }
         if !config.app_path.is_empty() {
             cmd.push_str(&format!(" {} {}", config.app_offset, config.app_path));
         }
     }
-    
+
     // Add NVS if offset is present
     if !config.nvs_offset.is_empty() {
         cmd.push_str(&format!(" {} <dynamic_nvs.bin>", config.nvs_offset));
     }
-    
+
     cmd
 }
 
@@ -1093,5 +1213,26 @@ mod tests {
         assert!(is_esp_usb_serial_jtag(Some(0x303a), Some(0x1001)));
         assert!(!is_esp_usb_serial_jtag(Some(0x303a), Some(0x0002)));
         assert!(!is_esp_usb_serial_jtag(None, Some(0x1001)));
+    }
+
+    #[test]
+    fn test_bin_header_mutation_is_explicit_only() {
+        let mut config = ProjectConfig::default();
+        config.flash_mode = "dio".to_string();
+        config.flash_freq = "80m".to_string();
+        config.flash_size = "16MB".to_string();
+
+        let original = [0xE9, 0x01, 0xAA, 0xBB, 0x00, 0x00];
+
+        let mut changed = original;
+        modify_bin_header(&mut changed, &config);
+        assert_ne!(changed[2], original[2]);
+        assert_ne!(changed[3], original[3]);
+
+        let mut kept = original;
+        if !config.do_not_chg_bin {
+            modify_bin_header(&mut kept, &config);
+        }
+        assert_eq!(kept, original);
     }
 }
