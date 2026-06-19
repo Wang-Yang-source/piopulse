@@ -25,9 +25,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let block_inner = config_block.inner(area);
     f.render_widget(config_block, area);
 
+    let show_inspector = block_inner.height >= 14;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(10), Constraint::Length(6)])
+        .constraints([
+            Constraint::Min(5),
+            Constraint::Length(if show_inspector { 6 } else { 0 }),
+        ])
         .split(block_inner);
 
     // Configuration Fields
@@ -157,140 +161,142 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, chunks[0]);
 
     // Inspector and Guides
-    let selected_idx = app
-        .selected_config_field
-        .min(fields.len().saturating_sub(1));
-    let (selected_label, selected_val) = &fields[selected_idx];
-    let display_val = if app.is_editing_config {
-        app.edit_buffer.clone()
-    } else {
-        selected_val.clone()
-    };
+    if show_inspector {
+        let selected_idx = app
+            .selected_config_field
+            .min(fields.len().saturating_sub(1));
+        let (selected_label, selected_val) = &fields[selected_idx];
+        let display_val = if app.is_editing_config {
+            app.edit_buffer.clone()
+        } else {
+            selected_val.clone()
+        };
 
-    let inspector_block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
-        .title(Span::styled(
-            tr("config_inspector_title", lang),
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.accent)
-                .add_modifier(Modifier::BOLD),
-        ));
-
-    let mut inspector_lines = Vec::new();
-
-    // Line 1: Parameter Name and Status
-    let clean_label = selected_label.trim_end_matches(':');
-    let status_span = if app.admin_mode {
-        if app.is_editing_config {
-            Span::styled(
-                tr("config_status_editing", lang),
+        let inspector_block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
+            .title(Span::styled(
+                tr("config_inspector_title", lang),
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.accent)
                     .add_modifier(Modifier::BOLD),
-            )
+            ));
+
+        let mut inspector_lines = Vec::new();
+
+        // Line 1: Parameter Name and Status
+        let clean_label = selected_label.trim_end_matches(':');
+        let status_span = if app.admin_mode {
+            if app.is_editing_config {
+                Span::styled(
+                    tr("config_status_editing", lang),
+                    Style::default()
+                        .fg(CATPPUCCIN_MOCHA.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(
+                    tr("config_status_unlocked", lang),
+                    Style::default()
+                        .fg(CATPPUCCIN_MOCHA.success)
+                        .add_modifier(Modifier::BOLD),
+                )
+            }
         } else {
             Span::styled(
-                tr("config_status_unlocked", lang),
+                tr("config_status_locked", lang),
                 Style::default()
-                    .fg(CATPPUCCIN_MOCHA.success)
+                    .fg(CATPPUCCIN_MOCHA.text_muted)
                     .add_modifier(Modifier::BOLD),
             )
-        }
-    } else {
-        Span::styled(
-            tr("config_status_locked", lang),
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.danger)
-                .add_modifier(Modifier::BOLD),
-        )
-    };
+        };
 
-    inspector_lines.push(Line::from(vec![
-        Span::styled(
-            tr("config_parameter", lang),
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-        ),
-        Span::styled(
-            clean_label,
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            tr("config_status", lang),
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-        ),
-        status_span,
-    ]));
-
-    // Line 2: Spacer
-    inspector_lines.push(Line::from(""));
-
-    // Line 3: Value
-    let val_color = if app.is_editing_config {
-        CATPPUCCIN_MOCHA.accent
-    } else if app.admin_mode {
-        CATPPUCCIN_MOCHA.success
-    } else {
-        CATPPUCCIN_MOCHA.primary
-    };
-
-    inspector_lines.push(Line::from(vec![
-        Span::styled(
-            tr("config_value", lang),
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-        ),
-        Span::styled(
-            display_val,
-            Style::default().fg(val_color).add_modifier(Modifier::BOLD),
-        ),
-    ]));
-
-    // Line 4: Spacer
-    inspector_lines.push(Line::from(""));
-
-    // Line 5: Help Guide
-    let guide_spans = if !app.admin_mode {
-        vec![
+        inspector_lines.push(Line::from(vec![
             Span::styled(
-                tr("config_guide", lang),
+                format!("{} ", clean_label),
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            status_span,
+        ]));
+
+        // Line 2: Current Value
+        inspector_lines.push(Line::from(vec![
+            Span::styled(
+                if lang == "zh" {
+                    "  当前值: "
+                } else {
+                    "  Value:  "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(
+                display_val,
                 Style::default().fg(CATPPUCCIN_MOCHA.primary),
             ),
-            Span::styled(
-                tr("config_guide_locked", lang),
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
-        ]
-    } else if app.is_editing_config {
-        vec![
-            Span::styled(
-                tr("config_guide", lang),
-                Style::default().fg(CATPPUCCIN_MOCHA.accent),
-            ),
-            Span::styled(
-                tr("config_guide_editing", lang),
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
-        ]
-    } else {
-        vec![
-            Span::styled(
-                tr("config_guide", lang),
-                Style::default().fg(CATPPUCCIN_MOCHA.success),
-            ),
-            Span::styled(
-                tr("config_guide_unlocked", lang),
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
-        ]
-    };
-    inspector_lines.push(Line::from(guide_spans));
+        ]));
 
-    let admin_help = Paragraph::new(inspector_lines)
-        .block(inspector_block)
-        .wrap(Wrap { trim: true });
-    f.render_widget(admin_help, chunks[1]);
+        // Line 3: Description / Metadata
+        let desc_key = format!("desc_{}", selected_label.trim_end_matches(':'));
+        let desc = tr(&desc_key, lang);
+        inspector_lines.push(Line::from(vec![
+            Span::styled(
+                if lang == "zh" {
+                    "  说明:   "
+                } else {
+                    "  Desc:   "
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+            Span::styled(desc, Style::default().fg(CATPPUCCIN_MOCHA.text)),
+        ]));
+
+        // Line 4: Spacer
+        inspector_lines.push(Line::from(""));
+
+        // Line 5: Help Guide
+        let guide_spans = if !app.admin_mode {
+            vec![
+                Span::styled(
+                    tr("config_guide", lang),
+                    Style::default().fg(CATPPUCCIN_MOCHA.primary),
+                ),
+                Span::styled(
+                    tr("config_guide_locked", lang),
+                    Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+                ),
+            ]
+        } else if app.is_editing_config {
+            vec![
+                Span::styled(
+                    tr("config_guide", lang),
+                    Style::default().fg(CATPPUCCIN_MOCHA.accent),
+                ),
+                Span::styled(
+                    tr("config_guide_editing", lang),
+                    Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+                ),
+            ]
+        } else {
+            vec![
+                Span::styled(
+                    tr("config_guide", lang),
+                    Style::default().fg(CATPPUCCIN_MOCHA.success),
+                ),
+                Span::styled(
+                    tr("config_guide_unlocked", lang),
+                    Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+                ),
+            ]
+        };
+        inspector_lines.push(Line::from(guide_spans));
+
+        let admin_help = Paragraph::new(inspector_lines)
+            .block(inspector_block)
+            .wrap(Wrap { trim: true });
+        f.render_widget(admin_help, chunks[1]);
+    }
 }
 
 fn table_cell<'a>(span: Span<'a>) -> Line<'a> {

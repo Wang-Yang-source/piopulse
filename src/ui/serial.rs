@@ -15,11 +15,19 @@ const SERIAL_OPTION_ROWS: usize = 5;
 const SERIAL_OPTION_COUNT: usize = SERIAL_OPTION_ROWS * 2;
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
-    // Horizontal Split: Console Terminal (75%) and Control Sidebar (25%)
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(75), Constraint::Percentage(25)])
-        .split(area);
+    let narrow = area.width < 92;
+    let chunks = if narrow {
+        let controls_height = area.height.saturating_sub(8).clamp(7, 14);
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(6), Constraint::Length(controls_height)])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(54), Constraint::Length(34)])
+            .split(area)
+    };
 
     draw_console_panel(f, app, chunks[0]);
     draw_settings_panel(f, app, chunks[1]);
@@ -275,19 +283,28 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    let constraints = if area.height < 5 {
+        [Constraint::Length(area.height), Constraint::Length(0), Constraint::Length(0), Constraint::Length(0)]
+    } else if area.height < 12 {
+        [Constraint::Length(5), Constraint::Length(area.height.saturating_sub(5)), Constraint::Length(0), Constraint::Length(0)]
+    } else if area.height < 18 {
+        [Constraint::Length(5), Constraint::Length(7), Constraint::Length(0), Constraint::Min(0)]
+    } else {
+        [
             Constraint::Length(5), // Port, baud, and monitor state
-            Constraint::Length(7), // Toggles / Settings (increased for DTR/RTS row)
+            Constraint::Length(7), // Toggles / Settings
             Constraint::Length(6), // Timeline / Parser Summary
             Constraint::Min(5),    // Quick Command Templates
-        ])
+        ]
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(area);
 
-    app.layout_zones.serial_port_info = chunks[0];
-    app.layout_zones.serial_options = chunks[1];
-    app.layout_zones.serial_quick_commands = chunks[3];
+    app.layout_zones.serial_port_info = if chunks[0].height >= 3 { chunks[0] } else { Rect::default() };
+    app.layout_zones.serial_options = if chunks[1].height >= 3 { chunks[1] } else { Rect::default() };
+    app.layout_zones.serial_quick_commands = if chunks[3].height >= 3 { chunks[3] } else { Rect::default() };
 
     let lang = &app.tool_config.language;
     // 1. Connection Config info
@@ -406,7 +423,9 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         status_line.style(info_row_style(2)),
     ];
 
-    f.render_widget(Paragraph::new(info_text).block(info_block), chunks[0]);
+    if chunks[0].height >= 3 {
+        f.render_widget(Paragraph::new(info_text).block(info_block), chunks[0]);
+    }
 
     // 2. Toggles
     let toggles_block = Block::default()
@@ -527,9 +546,13 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         ),
     ];
 
-    f.render_widget(Paragraph::new(toggles_text).block(toggles_block), chunks[1]);
+    if chunks[1].height >= 3 {
+        f.render_widget(Paragraph::new(toggles_text).block(toggles_block), chunks[1]);
+    }
 
-    draw_analysis_panel(f, app, chunks[2]);
+    if chunks[2].height > 0 {
+        draw_analysis_panel(f, app, chunks[2]);
+    }
 
     // 3. Quick Command Templates
     let rows = vec![
@@ -726,20 +749,24 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
             }
         });
 
-    let table = Table::new(
+    let mut table = Table::new(
         rows,
         [Constraint::Percentage(40), Constraint::Percentage(60)],
     )
-    .block(quick_block)
-    .header(
-        Row::new(vec![tr("serial_cmd", lang), tr("serial_desc", lang)]).style(
-            Style::default()
-                .bg(mocha::SURFACE0)
-                .add_modifier(Modifier::BOLD),
-        ),
-    );
+    .block(quick_block);
+    if chunks[3].height >= 4 {
+        table = table.header(
+            Row::new(vec![tr("serial_cmd", lang), tr("serial_desc", lang)]).style(
+                Style::default()
+                    .bg(mocha::SURFACE0)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
+    }
 
-    f.render_widget(table, chunks[3]);
+    if chunks[3].height >= 3 {
+        f.render_widget(table, chunks[3]);
+    }
 }
 
 fn serial_notice_spinner(notice: &SerialNotice) -> &'static str {

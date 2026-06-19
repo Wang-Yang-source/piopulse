@@ -206,7 +206,7 @@ impl ProjectConfig {
         Self::detect_platformio_config_from_ini(
             &build_root.join("platformio.ini"),
             &build_root,
-            Some(source_dir.join("factory")),
+            Some(source_dir.join("build")),
         )
     }
 
@@ -357,7 +357,7 @@ impl ProjectConfig {
         };
         config.platformio_project_dir = project_dir.to_string_lossy().to_string();
         config.factory_dir = factory_dir
-            .unwrap_or_else(|| project_dir.join("factory"))
+            .unwrap_or_else(|| project_dir.join("build"))
             .to_string_lossy()
             .to_string();
 
@@ -436,7 +436,7 @@ impl ProjectConfig {
         })?;
 
         let factory_dir = if self.factory_dir.is_empty() {
-            project_dir.join("factory")
+            project_dir.join("build")
         } else {
             PathBuf::from(&self.factory_dir)
         };
@@ -965,7 +965,7 @@ fn copy_source_tree_recursive(
         if path.is_dir() {
             if matches!(
                 name_str.as_ref(),
-                ".git" | ".pio" | "factory" | "target" | ".agents" | ".codex"
+                ".git" | ".pio" | "build" | "factory" | "target" | ".agents" | ".codex"
             ) {
                 continue;
             }
@@ -1519,7 +1519,7 @@ required = true
         config.app_path = build_dir.join("firmware.bin").to_string_lossy().to_string();
 
         let packaged = config.materialize_platformio_factory_package().unwrap();
-        let factory_dir = project_dir.join("factory");
+        let factory_dir = project_dir.join("build");
 
         assert!(factory_dir.join("piopulse.toml").exists());
         assert!(factory_dir.join("bootloader.bin").exists());

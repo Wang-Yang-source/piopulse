@@ -111,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app on a blocking worker so the terminal can show startup progress immediately.
-    let config_path = "factory/piopulse.toml".to_string();
+    let config_path = "build/piopulse.toml".to_string();
     let startup_lang = config::ToolConfig::load().language;
     let startup_started = std::time::Instant::now();
     let config_path_for_startup = config_path.clone();

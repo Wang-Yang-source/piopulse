@@ -14,29 +14,36 @@ use ratatui::{
 };
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
+    let show_send_panel = area.height >= 14;
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
-            Constraint::Min(10),
-            Constraint::Length(4),
+            Constraint::Min(6),
+            Constraint::Length(if show_send_panel { 4 } else { 0 }),
         ])
         .split(area);
 
     app.layout_zones.plotter_header = main_layout[0];
-    app.layout_zones.plotter_send_panel = main_layout[2];
+    app.layout_zones.plotter_send_panel = if show_send_panel { main_layout[2] } else { Rect::default() };
 
     draw_header_bar(f, app, main_layout[0]);
 
     if main_layout[1].width < 88 {
         app.layout_zones.plotter_port_selector = Rect::default();
+        let show_stats = main_layout[1].height >= 14;
         let body_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(10), Constraint::Length(8)])
+            .constraints([
+                Constraint::Min(6),
+                Constraint::Length(if show_stats { 8 } else { 0 }),
+            ])
             .split(main_layout[1]);
 
         draw_chart_panel(f, app, body_layout[0]);
-        draw_telemetry_stats(f, app, body_layout[1]);
+        if show_stats {
+            draw_telemetry_stats(f, app, body_layout[1]);
+        }
     } else {
         let body_layout = Layout::default()
             .direction(Direction::Horizontal)
@@ -47,7 +54,9 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         draw_chart_panel(f, app, body_layout[1]);
     }
 
-    draw_send_panel(f, app, main_layout[2]);
+    if show_send_panel {
+        draw_send_panel(f, app, main_layout[2]);
+    }
 }
 
 fn draw_header_bar(f: &mut Frame, app: &App, area: Rect) {

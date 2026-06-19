@@ -371,15 +371,22 @@ impl App {
     ) -> Self {
         let mut pio_detected = false;
         let mut pio_package_notice = None;
-        let factory_dir = std::path::Path::new("factory");
+        let requested_config_path = std::path::PathBuf::from(&config_path);
+        let factory_dir = std::path::Path::new("build");
         let factory_flash_config = factory_dir.join("piopulse.toml");
+        let user_config_path = if requested_config_path == factory_flash_config {
+            std::path::PathBuf::from("piopulse.toml")
+        } else {
+            requested_config_path
+        };
         let mut active_config_path = config_path.clone();
         let load_user_or_default = || {
-            ProjectConfig::load_from_file(&config_path).unwrap_or_else(|_| {
+            let config = ProjectConfig::load_from_file(&user_config_path).unwrap_or_else(|_| {
                 let default_cfg = ProjectConfig::default();
-                let _ = default_cfg.save_to_file(&config_path);
+                let _ = default_cfg.save_to_file(&user_config_path);
                 default_cfg
-            })
+            });
+            (config, user_config_path.to_string_lossy().to_string())
         };
         let mut config = if let Some(pio_ini) = external_platformio_ini {
             pio_detected = true;
@@ -393,7 +400,7 @@ impl App {
                         &factory_flash_config,
                     ) {
                         pio_package_notice = Some(format!(
-                            "External PlatformIO config loaded from {}; factory/piopulse.toml generated from existing factory binaries.",
+                            "External PlatformIO config loaded from {}; build/piopulse.toml generated from existing build binaries.",
                             pio_ini.display()
                         ));
                         active_config_path = factory_flash_config.to_string_lossy().to_string();
@@ -402,7 +409,7 @@ impl App {
                         match pio_cfg.materialize_platformio_factory_package() {
                             Ok(factory_cfg) => {
                                 pio_package_notice = Some(format!(
-                                    "External PlatformIO config loaded from {}; factory package generated at factory/piopulse.toml.",
+                                    "External PlatformIO config loaded from {}; build package generated at build/piopulse.toml.",
                                     pio_ini.display()
                                 ));
                                 active_config_path =
@@ -411,7 +418,7 @@ impl App {
                             }
                             Err(err) => {
                                 pio_package_notice = Some(format!(
-                                    "External PlatformIO config loaded from {}, but startup self-check could not generate factory package: {}",
+                                    "External PlatformIO config loaded from {}, but startup self-check could not generate build package: {}",
                                     pio_ini.display(),
                                     format_platformio_build_error(&err)
                                 ));
@@ -425,13 +432,19 @@ impl App {
                         "External PlatformIO config could not be used: {}",
                         format_platformio_build_error(&err)
                     ));
-                    load_user_or_default()
+                    let (user_cfg, user_cfg_path) = load_user_or_default();
+                    active_config_path = user_cfg_path;
+                    user_cfg
                 }
             }
         } else if factory_flash_config.exists() {
             active_config_path = factory_flash_config.to_string_lossy().to_string();
-            let loaded = ProjectConfig::load_from_file(&factory_flash_config)
-                .unwrap_or_else(|_| load_user_or_default());
+            let loaded =
+                ProjectConfig::load_from_file(&factory_flash_config).unwrap_or_else(|_| {
+                    let (user_cfg, user_cfg_path) = load_user_or_default();
+                    active_config_path = user_cfg_path;
+                    user_cfg
+                });
             if manifest_has_errors(&loaded) {
                 if let Some(factory_cfg) = create_factory_manifest_from_existing_artifacts(
                     Some(&loaded),
@@ -439,7 +452,7 @@ impl App {
                     &factory_flash_config,
                 ) {
                     pio_package_notice = Some(
-                        "Startup self-check repaired factory/piopulse.toml from existing factory binaries."
+                        "Startup self-check repaired build/piopulse.toml from existing build binaries."
                             .to_string(),
                     );
                     active_config_path = factory_flash_config.to_string_lossy().to_string();
@@ -449,7 +462,7 @@ impl App {
                     match pio_cfg.materialize_platformio_factory_package() {
                         Ok(factory_cfg) => {
                             pio_package_notice = Some(
-                                "Startup self-check rebuilt factory/piopulse.toml from PlatformIO because the factory manifest was invalid."
+                                "Startup self-check rebuilt build/piopulse.toml from PlatformIO because the build manifest was invalid."
                                     .to_string(),
                             );
                             active_config_path = factory_flash_config.to_string_lossy().to_string();
@@ -457,7 +470,7 @@ impl App {
                         }
                         Err(err) => {
                             pio_package_notice = Some(format!(
-                                "Startup self-check found an invalid factory manifest but could not rebuild factory package: {}",
+                                "Startup self-check found an invalid build manifest but could not rebuild build package: {}",
                                 format_platformio_build_error(&err)
                             ));
                             loaded
@@ -476,14 +489,14 @@ impl App {
                 factory_dir,
                 &factory_flash_config,
             ) {
-                pio_package_notice = Some("PlatformIO project detected; factory/piopulse.toml generated from existing factory binaries.".to_string());
+                pio_package_notice = Some("PlatformIO project detected; build/piopulse.toml generated from existing build binaries.".to_string());
                 active_config_path = factory_flash_config.to_string_lossy().to_string();
                 factory_cfg
             } else {
                 match pio_cfg.materialize_platformio_factory_package() {
                     Ok(factory_cfg) => {
                         pio_package_notice = Some(
-                            "PlatformIO project detected; factory package generated at factory/piopulse.toml."
+                            "PlatformIO project detected; build package generated at build/piopulse.toml."
                                 .to_string(),
                         );
                         active_config_path = factory_flash_config.to_string_lossy().to_string();
@@ -491,7 +504,7 @@ impl App {
                     }
                     Err(err) => {
                         pio_package_notice = Some(format!(
-                            "PlatformIO project detected, but startup self-check could not generate factory package: {}",
+                            "PlatformIO project detected, but startup self-check could not generate build package: {}",
                             format_platformio_build_error(&err)
                         ));
                         pio_cfg
@@ -503,7 +516,10 @@ impl App {
             factory_dir,
             &factory_flash_config,
         ) {
-            pio_package_notice = Some("Factory manifest generated at factory/piopulse.toml from existing factory binaries.".to_string());
+            pio_package_notice = Some(
+                "Build manifest generated at build/piopulse.toml from existing build binaries."
+                    .to_string(),
+            );
             active_config_path = factory_flash_config.to_string_lossy().to_string();
             factory_cfg
         } else if factory_dir.is_dir() {
@@ -511,7 +527,9 @@ impl App {
             default_cfg.populate_default_images_if_empty(factory_dir);
             default_cfg
         } else {
-            load_user_or_default()
+            let (user_cfg, user_cfg_path) = load_user_or_default();
+            active_config_path = user_cfg_path;
+            user_cfg
         };
 
         let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -842,7 +860,7 @@ impl App {
             return true;
         }
 
-        self.log("Firmware manifest is incomplete; trying to build PlatformIO project and generate factory package.");
+        self.log("Firmware manifest is incomplete; trying to build PlatformIO project and generate build package.");
 
         match self.config.materialize_platformio_factory_package() {
             Ok(config) => {
@@ -850,9 +868,7 @@ impl App {
                 self.refresh_flash_mode_from_images();
                 let errors = self.current_mode_manifest_errors();
                 if errors.is_empty() {
-                    self.log(
-                        "Factory package generated at factory/piopulse.toml; manifest is ready.",
-                    );
+                    self.log("Build package generated at build/piopulse.toml; manifest is ready.");
                     true
                 } else {
                     self.log(format!(
@@ -864,7 +880,7 @@ impl App {
             }
             Err(err) => {
                 self.log(format!(
-                    "Cannot start flashing because firmware files are missing and factory package generation failed: {}",
+                    "Cannot start flashing because firmware files are missing and build package generation failed: {}",
                     format_platformio_build_error(&err)
                 ));
                 false
@@ -4273,15 +4289,81 @@ mod tests {
     #[test]
     fn test_top_tabs_compact_mode_uses_numbers_only() {
         let mut app = App::new("test_piopulse.toml".to_string());
-        app.layout_zones.tabs = ratatui::layout::Rect::new(0, 3, 32, 2);
+        app.layout_zones.tabs = ratatui::layout::Rect::new(0, 3, 40, 2);
 
         assert_eq!(
-            crate::ui::tab_titles_for_width(&app.tool_config.language, 32),
+            crate::ui::tab_titles_for_width(&app.tool_config.language, 40),
             [" [1] ", " [2] ", " [3] ", " [4] ", " [5] "]
         );
 
         app.handle_mouse_move(8, 3);
         assert_eq!(app.hover_tab, Some(1));
+
+        let _ = std::fs::remove_file("test_piopulse.toml");
+    }
+
+    #[test]
+    fn test_top_tabs_tiny_mode_fits_very_narrow_width() {
+        let mut app = App::new("test_piopulse.toml".to_string());
+        app.layout_zones.tabs = ratatui::layout::Rect::new(0, 3, 32, 2);
+
+        assert_eq!(
+            crate::ui::tab_titles_for_width(&app.tool_config.language, 32),
+            ["1", "2", "3", "4", "5"]
+        );
+
+        app.handle_mouse_move(4, 3);
+        assert_eq!(app.hover_tab, Some(1));
+
+        let _ = std::fs::remove_file("test_piopulse.toml");
+    }
+
+    #[test]
+    fn test_small_terminal_renders_core_tabs_and_modals() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        for (width, height) in [(40, 12), (52, 14), (64, 18)] {
+            for tab in [
+                ActiveTab::Serial,
+                ActiveTab::Plotter,
+                ActiveTab::Widgets,
+                ActiveTab::Flasher,
+                ActiveTab::Configuration,
+            ] {
+                let backend = TestBackend::new(width, height);
+                let mut terminal = Terminal::new(backend).unwrap();
+                let mut app = App::new("test_piopulse.toml".to_string());
+                app.splash_ticks_remaining = None;
+                app.active_tab = tab;
+                app.channels = vec![Channel::new(crate::worker::DetectedPort {
+                    name: "COM3".to_string(),
+                    vid: None,
+                    pid: None,
+                    product: None,
+                    manufacturer: None,
+                })];
+
+                terminal
+                    .draw(|frame| crate::ui::draw(frame, &mut app))
+                    .unwrap();
+            }
+        }
+
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new("test_piopulse.toml".to_string());
+        app.splash_ticks_remaining = None;
+        app.show_exit_menu = true;
+        app.show_tool_settings = true;
+        app.show_port_menu = true;
+        app.show_custom_baud_modal = true;
+        app.show_auto_reply_modal = true;
+        app.show_manifest_edit_modal = true;
+        app.show_file_picker = true;
+
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
 
         let _ = std::fs::remove_file("test_piopulse.toml");
     }

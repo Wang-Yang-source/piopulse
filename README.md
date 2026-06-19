@@ -215,12 +215,12 @@ PioPulse 的主界面分为 5 个 TUI 页签：
 
 ## 默认烧录包
 
-烧录时优先读取当前目录的 `piopulse.toml`。如果没有这个文件，会继续查找 `factory/piopulse.toml`；如果 `factory/` 目录里只有标准命名的 bin 文件，也会自动生成默认分段清单。
+烧录时优先读取当前目录的 `piopulse.toml`。如果没有这个文件，会继续查找 `build/piopulse.toml`；如果 `build/` 目录里只有标准命名的 bin 文件，也会自动生成默认分段清单。
 
 推荐的产线包结构：
 
 ```text
-factory/
+build/
   piopulse.toml
   bootloader.bin
   partitions.bin

@@ -12,7 +12,7 @@ pub mod utils;
 pub mod widgets;
 
 pub use translation::tr;
-pub use utils::center_rect;
+pub use utils::{center_rect, responsive_modal_rect};
 
 use crate::app::{ActiveTab, App};
 use crate::ui::theme::{CATPPUCCIN_MOCHA, mocha};
@@ -47,19 +47,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     footer::draw(f, app, chunks[2]);
 
     if app.show_exit_menu {
-        let area = center_rect(48, 11, f.size());
+        let area = responsive_modal_rect(48, 11, f.size());
         app.layout_zones.exit_menu_modal = area;
         modal::draw_exit_menu(f, app, area);
     }
 
     if app.is_entering_password {
-        let area = center_rect(45, 11, f.size());
+        let area = responsive_modal_rect(45, 11, f.size());
         app.layout_zones.password_modal = area;
         modal::draw(f, app, area);
     }
 
     if app.show_tool_settings {
-        let area = center_rect(48, 11, f.size());
+        let area = responsive_modal_rect(48, 11, f.size());
         app.layout_zones.tool_settings_modal = area;
         modal::draw_tool_settings(f, app, area);
     }
@@ -67,31 +67,31 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.show_port_menu {
         let port_count = app.channels.len() + 1;
         let height = (port_count + 4).clamp(6, 15) as u16;
-        let area = center_rect(50, height, f.size());
+        let area = responsive_modal_rect(50, height, f.size());
         app.layout_zones.port_menu_modal = area;
         modal::draw_port_menu(f, app, area);
     }
 
     if app.show_custom_baud_modal {
-        let area = center_rect(42, 11, f.size());
+        let area = responsive_modal_rect(42, 11, f.size());
         app.layout_zones.custom_baud_modal = area;
         modal::draw_custom_baud(f, app, area);
     }
 
     if app.show_auto_reply_modal {
-        let area = center_rect(52, 12, f.size());
+        let area = responsive_modal_rect(52, 12, f.size());
         app.layout_zones.auto_reply_modal = area;
         modal::draw_auto_reply(f, app, area);
     }
 
     if app.show_manifest_edit_modal {
-        let area = center_rect(52, 9, f.size());
+        let area = responsive_modal_rect(52, 9, f.size());
         app.layout_zones.manifest_edit_modal = area;
         modal::draw_manifest_edit(f, app, area);
     }
 
     if app.show_file_picker {
-        let area = center_rect(70, 18, f.size());
+        let area = responsive_modal_rect(70, 18, f.size());
         app.layout_zones.file_picker_modal = area;
         modal::draw_file_picker(f, app, area);
     }
@@ -235,16 +235,24 @@ pub fn tab_titles_for_width(lang: &str, width: u16) -> [&'static str; 5] {
         tr("tab_settings", lang),
     ];
     let compact = [" [1] ", " [2] ", " [3] ", " [4] ", " [5] "];
+    let tiny = ["1", "2", "3", "4", "5"];
     let full_width: usize = full
         .iter()
         .map(|title| UnicodeWidthStr::width(*title))
         .sum();
     let separator_width = UnicodeWidthStr::width(" | ") * 4;
+    let compact_width: usize = compact
+        .iter()
+        .map(|title| UnicodeWidthStr::width(*title))
+        .sum::<usize>()
+        + separator_width;
 
     if full_width + separator_width <= width as usize {
         full
-    } else {
+    } else if compact_width <= width as usize {
         compact
+    } else {
+        tiny
     }
 }
 

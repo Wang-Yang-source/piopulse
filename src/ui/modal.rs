@@ -28,20 +28,24 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(block, area);
 
+    let show_msg = inner_area.height >= 6;
+    let show_cancel = inner_area.height >= 5;
     let text_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Title line
+            Constraint::Length(if show_msg { 1 } else { 0 }), // Title line
             Constraint::Length(3), // Input box
-            Constraint::Length(1), // Help / Cancel line
-            Constraint::Length(1), // Error line
+            Constraint::Length(if show_cancel { 1 } else { 0 }), // Help / Cancel line
+            Constraint::Length(if app.password_incorrect { 1 } else { 0 }), // Error line
             Constraint::Min(0),
         ])
         .split(inner_area);
 
-    let msg = Paragraph::new(crate::ui::tr("auth_msg", lang))
-        .style(Style::default().fg(CATPPUCCIN_MOCHA.text).bg(mocha::MANTLE));
-    f.render_widget(msg, text_chunks[0]);
+    if show_msg {
+        let msg = Paragraph::new(crate::ui::tr("auth_msg", lang))
+            .style(Style::default().fg(CATPPUCCIN_MOCHA.text).bg(mocha::MANTLE));
+        f.render_widget(msg, text_chunks[0]);
+    }
 
     // Mask password characters
     let masked_input: String = std::iter::repeat('*')
@@ -57,14 +61,16 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .style(Style::default().fg(CATPPUCCIN_MOCHA.text).bg(mocha::MANTLE));
     f.render_widget(input_widget, text_chunks[1]);
 
-    let cancel_msg = Paragraph::new(crate::ui::tr("auth_cancel", lang)).style(
-        Style::default()
-            .fg(CATPPUCCIN_MOCHA.text_muted)
-            .bg(mocha::MANTLE),
-    );
-    f.render_widget(cancel_msg, text_chunks[2]);
+    if show_cancel {
+        let cancel_msg = Paragraph::new(crate::ui::tr("auth_cancel", lang)).style(
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text_muted)
+                .bg(mocha::MANTLE),
+        );
+        f.render_widget(cancel_msg, text_chunks[2]);
+    }
 
-    if app.password_incorrect {
+    if app.password_incorrect && text_chunks[3].height > 0 {
         let err_msg = Paragraph::new(crate::ui::tr("auth_error", lang)).style(
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.danger)
@@ -85,14 +91,17 @@ pub fn draw_exit_menu(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(block, area);
 
+    let show_question = inner_area.height >= 6;
+    let show_hint = inner_area.height >= 7;
+
     // Layout inside modal: Title (1), Spacer/Text (2), Cards (3), Spacer/Hint (2)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Title
-            Constraint::Length(2), // Text question
+            Constraint::Length(if show_question { 2 } else { 0 }), // Text question
             Constraint::Length(3), // Two side-by-side cards
-            Constraint::Min(0),    // Hint
+            Constraint::Length(if show_hint { 1 } else { 0 }),    // Hint
         ])
         .split(inner_area);
 
@@ -113,10 +122,12 @@ pub fn draw_exit_menu(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(title, chunks[0]);
 
     // 2. Text question
-    let question = Paragraph::new(crate::ui::tr("exit_question", lang))
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(CATPPUCCIN_MOCHA.text).bg(mocha::MANTLE));
-    f.render_widget(question, chunks[1]);
+    if show_question {
+        let question = Paragraph::new(crate::ui::tr("exit_question", lang))
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(CATPPUCCIN_MOCHA.text).bg(mocha::MANTLE));
+        f.render_widget(question, chunks[1]);
+    }
 
     // 3. Option Cards
     let card_chunks = Layout::default()
@@ -189,14 +200,16 @@ pub fn draw_exit_menu(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(quit_text, card_chunks[1]);
 
     // 4. Hint
-    let hint = Paragraph::new(crate::ui::tr("exit_hint", lang))
-        .alignment(Alignment::Center)
-        .style(
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text_muted)
-                .bg(mocha::MANTLE),
-        );
-    f.render_widget(hint, chunks[3]);
+    if show_hint {
+        let hint = Paragraph::new(crate::ui::tr("exit_hint", lang))
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text_muted)
+                    .bg(mocha::MANTLE),
+            );
+        f.render_widget(hint, chunks[3]);
+    }
 }
 
 pub fn draw_tool_settings(f: &mut Frame, app: &App, area: Rect) {
@@ -210,14 +223,17 @@ pub fn draw_tool_settings(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(block, area);
 
+    let show_question = inner_area.height >= 6;
+    let show_hint = inner_area.height >= 7;
+
     // Layout inside modal: Title (1), Spacer/Text (2), Cards (3), Spacer/Hint (2)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Title
-            Constraint::Length(2), // Text question
+            Constraint::Length(if show_question { 2 } else { 0 }), // Text question
             Constraint::Length(3), // Two side-by-side cards
-            Constraint::Min(0),    // Hint
+            Constraint::Length(if show_hint { 1 } else { 0 }),    // Hint
         ])
         .split(inner_area);
 
@@ -238,10 +254,12 @@ pub fn draw_tool_settings(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(title, chunks[0]);
 
     // 2. Text question
-    let question = Paragraph::new(crate::ui::tr("tool_settings_question", lang))
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(CATPPUCCIN_MOCHA.text).bg(mocha::MANTLE));
-    f.render_widget(question, chunks[1]);
+    if show_question {
+        let question = Paragraph::new(crate::ui::tr("tool_settings_question", lang))
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(CATPPUCCIN_MOCHA.text).bg(mocha::MANTLE));
+        f.render_widget(question, chunks[1]);
+    }
 
     // 3. Option Cards
     let card_chunks = Layout::default()
@@ -314,14 +332,16 @@ pub fn draw_tool_settings(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(zh_text, card_chunks[1]);
 
     // 4. Hint
-    let hint = Paragraph::new(crate::ui::tr("tool_settings_hint", lang))
-        .alignment(Alignment::Center)
-        .style(
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text_muted)
-                .bg(mocha::MANTLE),
-        );
-    f.render_widget(hint, chunks[3]);
+    if show_hint {
+        let hint = Paragraph::new(crate::ui::tr("tool_settings_hint", lang))
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text_muted)
+                    .bg(mocha::MANTLE),
+            );
+        f.render_widget(hint, chunks[3]);
+    }
 }
 
 pub fn draw_port_menu(f: &mut Frame, app: &App, area: Rect) {
@@ -343,12 +363,14 @@ pub fn draw_port_menu(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(block, area);
 
+    let show_hint = inner_area.height >= 4;
+
     // Layout inside modal: List of ports (Min(0)) and Hint (1)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),    // List of ports
-            Constraint::Length(1), // Hint
+            Constraint::Length(if show_hint { 1 } else { 0 }), // Hint
         ])
         .split(inner_area);
 
@@ -384,14 +406,16 @@ pub fn draw_port_menu(f: &mut Frame, app: &App, area: Rect) {
     let list = ratatui::widgets::List::new(list_items).style(Style::default().bg(mocha::MANTLE));
     f.render_widget(list, chunks[0]);
 
-    let hint = Paragraph::new(crate::ui::tr("port_menu_hint", lang))
-        .alignment(Alignment::Center)
-        .style(
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text_muted)
-                .bg(mocha::MANTLE),
-        );
-    f.render_widget(hint, chunks[1]);
+    if show_hint {
+        let hint = Paragraph::new(crate::ui::tr("port_menu_hint", lang))
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text_muted)
+                    .bg(mocha::MANTLE),
+            );
+        f.render_widget(hint, chunks[1]);
+    }
 }
 
 pub fn draw_custom_baud(f: &mut Frame, app: &App, area: Rect) {
@@ -405,13 +429,16 @@ pub fn draw_custom_baud(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(block, area);
 
+    let show_presets = inner_area.height >= 7;
+    let show_hint = inner_area.height >= 6;
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Title
             Constraint::Length(3), // Input box for custom rate
-            Constraint::Length(3), // Presets hint
-            Constraint::Min(0),    // Help hint
+            Constraint::Length(if show_presets { 1 } else { 0 }), // Presets hint
+            Constraint::Length(if show_hint { 1 } else { 0 }),    // Help hint
         ])
         .split(inner_area);
 
@@ -455,35 +482,39 @@ pub fn draw_custom_baud(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(custom_baud_box, chunks[1]);
 
     // 3. Presets hint
-    let presets_msg = if lang == "zh" {
-        "常用预设: 9600, 115200, 921600, 1152000, 1500000"
-    } else {
-        "Presets: 9600, 115200, 921600, 1152000, 1500000"
-    };
-    let presets = Paragraph::new(presets_msg)
-        .alignment(Alignment::Center)
-        .style(
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text_muted)
-                .bg(mocha::MANTLE),
-        );
-    f.render_widget(presets, chunks[2]);
+    if show_presets {
+        let presets_msg = if lang == "zh" {
+            "常用预设: 9600, 115200, 921600, 1152000, 1500000"
+        } else {
+            "Presets: 9600, 115200, 921600, 1152000, 1500000"
+        };
+        let presets = Paragraph::new(presets_msg)
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text_muted)
+                    .bg(mocha::MANTLE),
+            );
+        f.render_widget(presets, chunks[2]);
+    }
 
     // 4. Auto-detect hint
-    let auto_detect_hint = if lang == "zh" {
-        "按 [Tab] 开始自动识别波特率 | Esc: 取消"
-    } else {
-        "Press [Tab] to Auto-Detect Baud Rate | Esc: Cancel"
-    };
-    let hint = Paragraph::new(auto_detect_hint)
-        .alignment(Alignment::Center)
-        .style(
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.accent)
-                .add_modifier(Modifier::ITALIC)
-                .bg(mocha::MANTLE),
-        );
-    f.render_widget(hint, chunks[3]);
+    if show_hint {
+        let auto_detect_hint = if lang == "zh" {
+            "按 [Tab] 开始自动识别波特率 | Esc: 取消"
+        } else {
+            "Press [Tab] to Auto-Detect Baud Rate | Esc: Cancel"
+        };
+        let hint = Paragraph::new(auto_detect_hint)
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.accent)
+                    .add_modifier(Modifier::ITALIC)
+                    .bg(mocha::MANTLE),
+            );
+        f.render_widget(hint, chunks[3]);
+    }
 }
 
 pub fn draw_auto_reply(f: &mut Frame, app: &App, area: Rect) {
@@ -497,13 +528,15 @@ pub fn draw_auto_reply(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(block, area);
 
+    let show_hint = inner_area.height >= 8;
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Title
             Constraint::Length(3), // Match pattern input
             Constraint::Length(3), // Response input
-            Constraint::Min(0),    // Help hint
+            Constraint::Length(if show_hint { 1 } else { 0 }),    // Help hint
         ])
         .split(inner_area);
 
@@ -581,17 +614,19 @@ pub fn draw_auto_reply(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(response_box, chunks[2]);
 
     // 4. Help hint
-    let hint_msg = if lang == "zh" {
-        "Tab: 切换输入框 | Enter: 保存并启用 | Esc: 取消"
-    } else {
-        "Tab: Switch input | Enter: Save & Enable | Esc: Cancel"
-    };
-    let hint = Paragraph::new(hint_msg).alignment(Alignment::Center).style(
-        Style::default()
-            .fg(CATPPUCCIN_MOCHA.text_muted)
-            .bg(mocha::MANTLE),
-    );
-    f.render_widget(hint, chunks[3]);
+    if show_hint {
+        let hint_msg = if lang == "zh" {
+            "Tab: 切换输入框 | Enter: 保存并启用 | Esc: 取消"
+        } else {
+            "Tab: Switch input | Enter: Save & Enable | Esc: Cancel"
+        };
+        let hint = Paragraph::new(hint_msg).alignment(Alignment::Center).style(
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text_muted)
+                .bg(mocha::MANTLE),
+        );
+        f.render_widget(hint, chunks[3]);
+    }
 }
 
 pub fn draw_manifest_edit(f: &mut Frame, app: &App, area: Rect) {
@@ -605,12 +640,14 @@ pub fn draw_manifest_edit(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(block, area);
 
+    let show_hint = inner_area.height >= 5;
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Title
             Constraint::Length(3), // Input box
-            Constraint::Min(0),    // Help hint
+            Constraint::Length(if show_hint { 1 } else { 0 }),    // Help hint
         ])
         .split(inner_area);
 
@@ -674,17 +711,19 @@ pub fn draw_manifest_edit(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(input_widget, chunks[1]);
 
     // 3. Help hint
-    let hint_msg = if lang == "zh" {
-        "Enter: 确认保存 | Esc: 取消"
-    } else {
-        "Enter: Confirm & Save | Esc: Cancel"
-    };
-    let hint = Paragraph::new(hint_msg).alignment(Alignment::Center).style(
-        Style::default()
-            .fg(CATPPUCCIN_MOCHA.text_muted)
-            .bg(mocha::MANTLE),
-    );
-    f.render_widget(hint, chunks[2]);
+    if show_hint {
+        let hint_msg = if lang == "zh" {
+            "Enter: 确认保存 | Esc: 取消"
+        } else {
+            "Enter: Confirm & Save | Esc: Cancel"
+        };
+        let hint = Paragraph::new(hint_msg).alignment(Alignment::Center).style(
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text_muted)
+                .bg(mocha::MANTLE),
+        );
+        f.render_widget(hint, chunks[2]);
+    }
 }
 
 pub fn draw_file_picker(f: &mut Frame, app: &mut App, area: Rect) {
@@ -698,13 +737,16 @@ pub fn draw_file_picker(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(block, area);
 
+    let show_filter = inner_area.height >= 10;
+    let show_hint = inner_area.height >= 7;
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Current Directory Title
-            Constraint::Length(3), // Filter Input
-            Constraint::Min(5),    // List of Items
-            Constraint::Length(1), // Footer hint
+            Constraint::Length(if show_filter { 3 } else { 0 }), // Filter Input
+            Constraint::Min(2),    // List of Items
+            Constraint::Length(if show_hint { 1 } else { 0 }), // Footer hint
         ])
         .split(inner_area);
 
@@ -735,44 +777,46 @@ pub fn draw_file_picker(f: &mut Frame, app: &mut App, area: Rect) {
     );
 
     // 2. Filter input box
-    let filter_title = if lang == "zh" {
-        " 输入过滤文件名 (支持实时筛选) "
-    } else {
-        " Filter filename (real-time) "
-    };
-    let filter_text = if app.file_picker_search_input.is_empty() {
-        Span::styled(
-            if lang == "zh" {
-                "输入筛选..."
-            } else {
-                "Type to filter..."
-            },
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text_disabled)
-                .add_modifier(Modifier::ITALIC),
-        )
-    } else {
-        Span::styled(
-            format!("{}█", app.file_picker_search_input),
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .add_modifier(Modifier::BOLD),
-        )
-    };
+    if show_filter {
+        let filter_title = if lang == "zh" {
+            " 输入过滤文件名 (支持实时筛选) "
+        } else {
+            " Filter filename (real-time) "
+        };
+        let filter_text = if app.file_picker_search_input.is_empty() {
+            Span::styled(
+                if lang == "zh" {
+                    "输入筛选..."
+                } else {
+                    "Type to filter..."
+                },
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text_disabled)
+                    .add_modifier(Modifier::ITALIC),
+            )
+        } else {
+            Span::styled(
+                format!("{}█", app.file_picker_search_input),
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text)
+                    .add_modifier(Modifier::BOLD),
+            )
+        };
 
-    let filter_box = Paragraph::new(Line::from(filter_text))
-        .block(
-            Block::default()
-                .title(Span::styled(
-                    filter_title,
-                    Style::default().fg(CATPPUCCIN_MOCHA.border_focus),
-                ))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border_focus)),
-        )
-        .style(Style::default().bg(mocha::MANTLE));
-    f.render_widget(filter_box, chunks[1]);
+        let filter_box = Paragraph::new(Line::from(filter_text))
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        filter_title,
+                        Style::default().fg(CATPPUCCIN_MOCHA.border_focus),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border_focus)),
+            )
+            .style(Style::default().bg(mocha::MANTLE));
+        f.render_widget(filter_box, chunks[1]);
+    }
 
     // 3. List of Items
     let headers = if lang == "zh" {
@@ -856,15 +900,17 @@ pub fn draw_file_picker(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(table, chunks[2]);
 
     // 4. Help hint
-    let hint_msg = if lang == "zh" {
-        "▲/▼: 选择 | Enter: 打开/确认 | Backspace: 返回上级 (或删除字符) | Esc: 关闭"
-    } else {
-        "▲/▼: Select | Enter: Open/Confirm | Backspace: Up Directory (or delete) | Esc: Close"
-    };
-    let hint = Paragraph::new(hint_msg).alignment(Alignment::Center).style(
-        Style::default()
-            .fg(CATPPUCCIN_MOCHA.text_muted)
-            .bg(mocha::MANTLE),
-    );
-    f.render_widget(hint, chunks[3]);
+    if show_hint {
+        let hint_msg = if lang == "zh" {
+            "▲/▼: 选择 | Enter: 打开/确认 | Backspace: 返回上级 (或删除字符) | Esc: 关闭"
+        } else {
+            "▲/▼: Select | Enter: Open/Confirm | Backspace: Up Directory (or delete) | Esc: Close"
+        };
+        let hint = Paragraph::new(hint_msg).alignment(Alignment::Center).style(
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text_muted)
+                .bg(mocha::MANTLE),
+        );
+        f.render_widget(hint, chunks[3]);
+    }
 }

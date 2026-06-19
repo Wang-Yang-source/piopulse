@@ -309,6 +309,7 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
     let lang = &app.tool_config.language;
+    let tiny = area.width < 76;
     let compact = area.width < 140;
     let mut rows = Vec::new();
     let visible_rows = area.height.saturating_sub(3) as usize;
@@ -417,7 +418,14 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default().bg(mocha::BASE)
         };
 
-        let cells = if compact {
+        let cells = if tiny {
+            vec![
+                Cell::from(Span::styled(port_text, port_style)),
+                Cell::from(Span::raw(chip_text)),
+                Cell::from(Span::styled(status_text, status_style)),
+                Cell::from(Span::styled(progress_text, progress_style)),
+            ]
+        } else if compact {
             vec![
                 Cell::from(Span::styled(port_text, port_style)),
                 Cell::from(Span::styled(usable_text, usable_style)),
@@ -451,7 +459,11 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
         rows.push(Row::new(cells).style(row_style));
     }
 
-    let headers = if compact && lang == "zh" {
+    let headers = if tiny && lang == "zh" {
+        vec!["端口", "芯片", "流程", "进度"]
+    } else if tiny {
+        vec!["Port", "Chip", "Flow", "Progress"]
+    } else if compact && lang == "zh" {
         vec!["端口", "可用", "芯片", "流程", "进度", "QA"]
     } else if compact {
         vec!["Port", "Use", "Chip", "Flow", "Progress", "QA"]
@@ -485,7 +497,14 @@ fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
         ]
     };
 
-    let widths: Vec<Constraint> = if compact {
+    let widths: Vec<Constraint> = if tiny {
+        vec![
+            Constraint::Length(14),
+            Constraint::Length(10),
+            Constraint::Min(12),
+            Constraint::Length(16),
+        ]
+    } else if compact {
         vec![
             Constraint::Length(14),
             Constraint::Length(10),
