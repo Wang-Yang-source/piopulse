@@ -270,6 +270,9 @@ impl ProjectConfig {
             selected_values.and_then(|values| values.get(key).cloned())
         };
 
+        let platform = get_env_value("platform")
+            .map(|value| value.to_lowercase())
+            .unwrap_or_default();
         let upload_speed =
             get_env_value("upload_speed").or_else(|| get_env_value("board_upload.speed"));
         let board = get_env_value("board");
@@ -304,33 +307,52 @@ impl ProjectConfig {
 
         let build_dir = project_dir.join(".pio").join("build").join(&env_name);
 
-        let bootloader_path = resolve_platformio_bootloader_path(
-            project_dir,
-            &build_dir,
-            board_manifest.as_ref(),
-            custom_bootloader.as_deref(),
-            variants_dir.as_deref(),
-        )
-        .to_string_lossy()
-        .to_string();
-        let partitions_path = build_dir
-            .join("partitions.bin")
+        let is_esp_platformio_env =
+            platform.contains("espressif") || board.to_lowercase().contains("esp32");
+
+        let bootloader_path = if is_esp_platformio_env {
+            resolve_platformio_bootloader_path(
+                project_dir,
+                &build_dir,
+                board_manifest.as_ref(),
+                custom_bootloader.as_deref(),
+                variants_dir.as_deref(),
+            )
             .to_string_lossy()
-            .to_string();
-        let app_path = build_dir.join("firmware.bin").to_string_lossy().to_string();
+            .to_string()
+        } else {
+            String::new()
+        };
+        let partitions_path = if is_esp_platformio_env {
+            build_dir
+                .join("partitions.bin")
+                .to_string_lossy()
+                .to_string()
+        } else {
+            String::new()
+        };
+        let app_path = if is_esp_platformio_env {
+            build_dir.join("firmware.bin").to_string_lossy().to_string()
+        } else {
+            build_dir.join("program").to_string_lossy().to_string()
+        };
 
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| "/home/waya".to_string());
-        let otadata_path = std::path::PathBuf::from(&home)
-            .join(".platformio")
-            .join("packages")
-            .join("framework-arduinoespressif32")
-            .join("tools")
-            .join("partitions")
-            .join("boot_app0.bin")
-            .to_string_lossy()
-            .to_string();
+        let otadata_path = if is_esp_platformio_env {
+            std::path::PathBuf::from(&home)
+                .join(".platformio")
+                .join("packages")
+                .join("framework-arduinoespressif32")
+                .join("tools")
+                .join("partitions")
+                .join("boot_app0.bin")
+                .to_string_lossy()
+                .to_string()
+        } else {
+            String::new()
+        };
 
         let folder_name = project_dir
             .file_name()
@@ -347,14 +369,41 @@ impl ProjectConfig {
             otadata_path,
             otadata_offset: "0xe000".to_string(),
             app_path,
-            app_offset: "0x10000".to_string(),
+            app_offset: if is_esp_platformio_env {
+                "0x10000".to_string()
+            } else {
+                "0x0000".to_string()
+            },
             baud_rate,
-            chip_type,
-            flash_mode,
-            flash_freq,
-            flash_size,
+            chip_type: if is_esp_platformio_env {
+                chip_type
+            } else {
+                "Auto".to_string()
+            },
+            flash_mode: if is_esp_platformio_env {
+                flash_mode
+            } else {
+                String::new()
+            },
+            flash_freq: if is_esp_platformio_env {
+                flash_freq
+            } else {
+                String::new()
+            },
+            flash_size: if is_esp_platformio_env {
+                flash_size
+            } else {
+                String::new()
+            },
             ..ProjectConfig::default()
         };
+        if !is_esp_platformio_env {
+            config.nvs_offset.clear();
+            config.blank_check = false;
+            config.label_template.clear();
+            config.qa_test_script.clear();
+            config.sn_prefix.clear();
+        }
         config.platformio_project_dir = project_dir.to_string_lossy().to_string();
         config.factory_dir = factory_dir
             .unwrap_or_else(|| project_dir.join("build"))
@@ -379,6 +428,11 @@ impl ProjectConfig {
             PathBuf::from(&self.platformio_project_dir)
         };
 
+        let is_esp_package = self.chip_type.to_lowercase().starts_with("esp")
+            || !self.bootloader_path.is_empty()
+            || !self.partitions_path.is_empty()
+            || !self.otadata_path.is_empty();
+
         let bootloader_candidates = vec![
             PathBuf::from(&self.bootloader_path),
             build_dir.join("bootloader.bin"),
@@ -393,9 +447,20 @@ impl ProjectConfig {
             build_dir.join("firmware.bin"),
         ];
 
-        let needs_build = existing_path(&bootloader_candidates).is_none()
-            || existing_path(&partitions_candidates).is_none()
-            || existing_path(&firmware_candidates).is_none();
+        let native_program_candidates = vec![
+            PathBuf::from(&self.app_path),
+            build_dir.join("program"),
+            build_dir.join("firmware.elf"),
+            build_dir.join("firmware.bin"),
+        ];
+
+        let needs_build = if is_esp_package {
+            existing_path(&bootloader_candidates).is_none()
+                || existing_path(&partitions_candidates).is_none()
+                || existing_path(&firmware_candidates).is_none()
+        } else {
+            existing_path(&native_program_candidates).is_none()
+        };
 
         if needs_build {
             let output = Command::new("pio")
@@ -412,6 +477,53 @@ impl ProjectConfig {
                     output.status, stdout, stderr
                 ));
             }
+        }
+
+        if !is_esp_package {
+            let program_src = existing_path(&native_program_candidates).ok_or_else(|| {
+                format!(
+                    "PlatformIO build did not produce a supported program image under {}",
+                    build_dir.display()
+                )
+            })?;
+            let factory_dir = if self.factory_dir.is_empty() {
+                project_dir.join("build")
+            } else {
+                PathBuf::from(&self.factory_dir)
+            };
+            fs::create_dir_all(&factory_dir)
+                .map_err(|e| format!("Failed to create {}: {}", factory_dir.display(), e))?;
+
+            let artifact_name = program_src
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("program");
+            let packaged_name = if artifact_name == "program" {
+                "program".to_string()
+            } else {
+                artifact_name.to_string()
+            };
+            let packaged_path = factory_dir.join(&packaged_name);
+            copy_factory_file(&program_src, &packaged_path)?;
+
+            let mut packaged = self.clone();
+            packaged.bootloader_path.clear();
+            packaged.partitions_path.clear();
+            packaged.otadata_path.clear();
+            packaged.app_path = packaged_path.to_string_lossy().to_string();
+            packaged.app_offset = "0x0000".to_string();
+            packaged.nvs_offset.clear();
+            packaged.use_merged_flash = false;
+            packaged.images = vec![FirmwareImage {
+                label: "program".to_string(),
+                path: packaged.app_path.clone(),
+                offset: packaged.app_offset.clone(),
+                required: true,
+                encrypted: false,
+                sha256: None,
+            }];
+            packaged.save_to_file(factory_dir.join("piopulse.toml"))?;
+            return Ok(packaged);
         }
 
         let bootloader_src = existing_path(&bootloader_candidates).ok_or_else(|| {
@@ -1560,6 +1672,58 @@ required = true
     }
 
     #[test]
+    fn test_materialize_platformio_native_package_from_program_output() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "piopulse_native_package_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let project_dir = temp_dir.join("native_project");
+        let build_dir = project_dir.join(".pio").join("build").join("native-env");
+        std::fs::create_dir_all(&build_dir).unwrap();
+        std::fs::write(
+            project_dir.join("platformio.ini"),
+            r#"
+[platformio]
+default_envs = native-env
+
+[env:native-env]
+platform = native
+"#,
+        )
+        .unwrap();
+        std::fs::write(build_dir.join("program"), [0x7f, b'E', b'L', b'F']).unwrap();
+
+        let config = ProjectConfig::detect_platformio_config_from_ini(
+            &project_dir.join("platformio.ini"),
+            &project_dir,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(config.chip_type, "Auto");
+        assert!(config.bootloader_path.is_empty());
+        assert!(config.partitions_path.is_empty());
+        assert!(config.otadata_path.is_empty());
+        assert_eq!(config.app_offset, "0x0000");
+
+        let packaged = config.materialize_platformio_factory_package().unwrap();
+        let factory_dir = project_dir.join("build");
+
+        assert!(factory_dir.join("piopulse.toml").exists());
+        assert!(factory_dir.join("program").exists());
+        assert!(!factory_dir.join("bootloader.bin").exists());
+        assert!(!factory_dir.join("partitions.bin").exists());
+        assert_eq!(packaged.images.len(), 1);
+        assert_eq!(packaged.images[0].label, "program");
+        assert_eq!(packaged.images[0].offset, "0x0000");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn test_platformio_custom_bootloader_resolves_from_project_variants() {
         let temp_dir = std::env::temp_dir().join(format!(
             "piopulse_custom_bootloader_test_{}",
@@ -1676,11 +1840,9 @@ board_build.arduino.custom_bootloader = bootloader_dio_80m.bin
         let (results, errors) = config.validate_manifest();
         assert_eq!(results.len(), 2);
 
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("Required image") && e.contains("empty"))
-        );
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("Required image") && e.contains("empty")));
         assert!(errors.iter().any(|e| e.contains("Duplicate offset")));
     }
 
@@ -1759,11 +1921,8 @@ board_build.arduino.custom_bootloader = bootloader_dio_80m.bin
         ];
 
         let cmd_segmented = crate::worker::generate_esptool_command("/dev/ttyUSB0", &config, false);
-        assert!(
-            cmd_segmented.contains(
-                "esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 921600 write_flash"
-            )
-        );
+        assert!(cmd_segmented
+            .contains("esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 921600 write_flash"));
         assert!(cmd_segmented.contains("--flash_mode dio"));
         assert!(cmd_segmented.contains("--flash_freq 80m"));
         assert!(cmd_segmented.contains("--flash_size 16MB"));
@@ -1811,12 +1970,10 @@ board_build.arduino.custom_bootloader = bootloader_dio_80m.bin
 
         // Clear path should remove it from images
         config.set_field(13, "".to_string());
-        assert!(
-            config
-                .images
-                .iter()
-                .find(|img| img.label == "firmware")
-                .is_none()
-        );
+        assert!(config
+            .images
+            .iter()
+            .find(|img| img.label == "firmware")
+            .is_none());
     }
 }

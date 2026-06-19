@@ -587,6 +587,15 @@ fn enabled_label(enabled: bool, lang: &str) -> &'static str {
 }
 
 fn flash_usable_status(channel: &Channel, lang: &str) -> (&'static str, Style) {
+    if channel.usb_manufacturer.as_deref() == Some("probe-rs") {
+        return (
+            if lang == "zh" { "调试器" } else { "Debug Probe" },
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.success)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+
     let description = format!(
         "{} {}",
         channel.usb_product.as_deref().unwrap_or_default(),

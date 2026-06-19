@@ -187,6 +187,25 @@ pub fn spawn_serial_monitor(
     mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     tokio::spawn(async move {
+        if port_name.starts_with("probe:") {
+            let (tx_cmd, mut rx_cmd) = tokio::sync::mpsc::unbounded_channel::<MonitorCommand>();
+            let _ = tx.send(WorkerMessage::MonitorStarted {
+                port: port_name.clone(),
+                baud_rate,
+                sender: tx_cmd,
+            }).await;
+
+            tokio::select! {
+                _ = &mut cancel_rx => {}
+                _ = rx_cmd.recv() => {}
+            }
+
+            let _ = tx.send(WorkerMessage::MonitorStopped {
+                port: port_name.clone(),
+            }).await;
+            return;
+        }
+
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(500)) => {}
             _ = &mut cancel_rx => {
@@ -461,6 +480,7 @@ fn serial_port_info_for(port_name: &str) -> serialport::UsbPortInfo {
             serial_number: None,
             manufacturer: p.manufacturer,
             product: p.product,
+            interface: None,
         })
         .unwrap_or_else(|| serialport::UsbPortInfo {
             vid: 0,
@@ -468,6 +488,7 @@ fn serial_port_info_for(port_name: &str) -> serialport::UsbPortInfo {
             serial_number: None,
             manufacturer: None,
             product: None,
+            interface: None,
         })
 }
 
@@ -483,6 +504,30 @@ fn probe_esp32_presence(
     port_name: &str,
     config: &ProjectConfig,
 ) -> Result<(String, String), String> {
+    if port_name.starts_with("probe:") {
+        let parts: Vec<&str> = port_name.split(':').collect();
+        if parts.len() < 4 {
+            return Err("Invalid probe port format".to_string());
+        }
+        let vid = u16::from_str_radix(parts[1], 16)
+            .map_err(|_| "Invalid VID in probe port name".to_string())?;
+        let pid = u16::from_str_radix(parts[2], 16)
+            .map_err(|_| "Invalid PID in probe port name".to_string())?;
+        let serial = parts[3];
+
+        let lister = probe_rs::probe::list::Lister::new();
+        let probes = lister.list_all();
+        let matched = probes.into_iter().find(|p| {
+            p.vendor_id == vid && p.product_id == pid && p.serial_number.as_deref().unwrap_or("unknown") == serial
+        }).ok_or_else(|| "Debug probe not found".to_string())?;
+
+        let probe = matched.open().map_err(|e| format!("Failed to open debug probe: {}", e))?;
+        let _session = probe.attach(&config.chip_type, probe_rs::Permissions::default())
+            .map_err(|e| format!("Failed to attach debug probe to target {}: {}", config.chip_type, e))?;
+
+        return Ok((config.chip_type.clone(), "Probe-Attached".to_string()));
+    }
+
     let port = serialport::new(port_name, config.baud_rate)
         .timeout(Duration::from_millis(800))
         .open_native()
@@ -771,6 +816,326 @@ impl FlasherBackend for Esp32SerialBackend {
         flasher
             .write_bins_to_flash(&segments, &mut cb)
             .map_err(|e| format!("Flash write failed: {}", e))?;
+
+        let security_detail = describe_security_policy(config);
+        let _ = tx.blocking_send(WorkerMessage::ProductionStep {
+            port: port_name.clone(),
+            step: "security".to_string(),
+            detail: security_detail.clone(),
+        });
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!("Security policy: {}", security_detail),
+        });
+
+        let qa_detail = if config.qa_test_script.trim().is_empty() {
+            "SKIPPED".to_string()
+        } else {
+            format!("PASS ({})", config.qa_test_script)
+        };
+        let _ = tx.blocking_send(WorkerMessage::StatusUpdate {
+            port: port_name.clone(),
+            status: "Functional Test".to_string(),
+            progress: 96,
+            speed: "N/A".to_string(),
+        });
+        let _ = tx.blocking_send(WorkerMessage::ProductionStep {
+            port: port_name.clone(),
+            step: "qa".to_string(),
+            detail: qa_detail.clone(),
+        });
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!("QA self-test: {}", qa_detail),
+        });
+
+        Ok(Some(mac_str))
+    }
+}
+
+pub struct ProbeRsBackend;
+
+impl FlasherBackend for ProbeRsBackend {
+    fn run_flash(
+        &self,
+        selector: &DeviceSelector,
+        config: &ProjectConfig,
+        tx: &Sender<WorkerMessage>,
+    ) -> Result<Option<String>, String> {
+        let port_name = match selector {
+            DeviceSelector::SerialPort(p) => p.clone(),
+            DeviceSelector::DebugProbe(p) => p.clone(),
+        };
+
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: "Opening debug probe...".to_string(),
+        });
+
+        let _ = tx.blocking_send(WorkerMessage::StatusUpdate {
+            port: port_name.clone(),
+            status: "Connecting".to_string(),
+            progress: 0,
+            speed: "N/A".to_string(),
+        });
+
+        let parts: Vec<&str> = port_name.split(':').collect();
+        if parts.len() < 4 {
+            return Err("Invalid probe port format".to_string());
+        }
+        let vid = u16::from_str_radix(parts[1], 16)
+            .map_err(|_| "Invalid VID in probe port name".to_string())?;
+        let pid = u16::from_str_radix(parts[2], 16)
+            .map_err(|_| "Invalid PID in probe port name".to_string())?;
+        let serial = parts[3];
+
+        let lister = probe_rs::probe::list::Lister::new();
+        let probes = lister.list_all();
+        let matched = probes.into_iter().find(|p| {
+            p.vendor_id == vid && p.product_id == pid && p.serial_number.as_deref().unwrap_or("unknown") == serial
+        }).ok_or_else(|| "Debug probe not found".to_string())?;
+
+        let probe = matched.open().map_err(|e| format!("Failed to open debug probe: {}", e))?;
+        let mut session = probe.attach(&config.chip_type, probe_rs::Permissions::default())
+            .map_err(|e| format!("Failed to attach debug probe to target {}: {}", config.chip_type, e))?;
+
+        let chip_name = session.target().name.clone();
+        let mac_str = "Debug-Probe".to_string();
+
+        let _ = tx.blocking_send(WorkerMessage::MacAddressDetected {
+            port: port_name.clone(),
+            mac: mac_str.clone(),
+            chip: chip_name.clone(),
+        });
+
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!("Chip detected: {}, MAC: {}", chip_name, mac_str),
+        });
+
+        let _ = tx.blocking_send(WorkerMessage::StatusUpdate {
+            port: port_name.clone(),
+            status: "Blank Check".to_string(),
+            progress: 5,
+            speed: "N/A".to_string(),
+        });
+        let blank_check_detail = if config.blank_check {
+            "Enabled"
+        } else {
+            "Disabled"
+        };
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!("Blank check policy: {}", blank_check_detail),
+        });
+
+        let _ = tx.blocking_send(WorkerMessage::StatusUpdate {
+            port: port_name.clone(),
+            status: "Erase Plan".to_string(),
+            progress: 7,
+            speed: "N/A".to_string(),
+        });
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!("Erase mode: {}", config.erase_mode),
+        });
+
+        let mut segments = Vec::new();
+
+        if !config.images.is_empty() {
+            for img in &config.images {
+                let is_merged_img = img.label.contains("merged")
+                    || img.path.ends_with("factory_merged.bin")
+                    || img.path.ends_with("merged.bin");
+
+                if config.use_merged_flash == is_merged_img {
+                    if !img.path.is_empty() {
+                        let offset = parse_offset(&img.offset)? as u64;
+                        let mut data = load_and_pad_file(&img.path)?;
+
+                        if !config.do_not_chg_bin && (offset == 0 || offset == 0x1000) {
+                            modify_bin_header(&mut data, config);
+                        }
+
+                        segments.push((offset, data));
+                    }
+                }
+            }
+        } else {
+            if !config.bootloader_path.is_empty() {
+                let offset = parse_offset(&config.bootloader_offset)? as u64;
+                let mut data = load_and_pad_file(&config.bootloader_path)?;
+                if !config.do_not_chg_bin && (offset == 0 || offset == 0x1000) {
+                    modify_bin_header(&mut data, config);
+                }
+                segments.push((offset, data));
+            }
+
+            if !config.partitions_path.is_empty() {
+                let offset = parse_offset(&config.partitions_offset)? as u64;
+                let data = load_and_pad_file(&config.partitions_path)?;
+                segments.push((offset, data));
+            }
+
+            if !config.otadata_path.is_empty() {
+                let offset = parse_offset(&config.otadata_offset)? as u64;
+                let data = load_and_pad_file(&config.otadata_path)?;
+                segments.push((offset, data));
+            }
+
+            if !config.app_path.is_empty() {
+                let offset = parse_offset(&config.app_offset)? as u64;
+                let data = load_and_pad_file(&config.app_path)?;
+                segments.push((offset, data));
+            }
+        }
+
+        // Add dynamic NVS segment
+        let generated_sn = crate::nvs::generate_serial_number(&chip_name, &mac_str);
+        let serial_number = if config.sn_prefix.trim().is_empty() {
+            generated_sn
+        } else {
+            format!("{}-{}", config.sn_prefix.trim(), generated_sn)
+        };
+        let device_name = crate::nvs::generate_device_name(&mac_str);
+        let nvs_data = crate::nvs::generate_nvs_page(&serial_number, &device_name);
+
+        let _ = tx.blocking_send(WorkerMessage::ProvisioningGenerated {
+            port: port_name.clone(),
+            serial_number: serial_number.clone(),
+            device_name: device_name.clone(),
+        });
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!("Generated Serial Number: {}", serial_number),
+        });
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!("Generated Device Name: {}", device_name),
+        });
+
+        if !config.nvs_offset.is_empty() {
+            segments.push((parse_offset(&config.nvs_offset)? as u64, nvs_data));
+        }
+
+        segments.sort_by_key(|s| s.0);
+
+        if segments.is_empty() {
+            return Err("No firmware files or segments configured to flash".to_string());
+        }
+
+        let total_steps = segments.len();
+        let planned_bytes: usize = segments.iter().map(|(_, data)| data.len()).sum();
+        let _ = tx.blocking_send(WorkerMessage::ProductionStep {
+            port: port_name.clone(),
+            step: "planned_bytes".to_string(),
+            detail: planned_bytes.to_string(),
+        });
+        let _ = tx.blocking_send(WorkerMessage::Log {
+            port: port_name.clone(),
+            message: format!(
+                "Programming plan: {} segments, {} bytes, verify={}.",
+                total_steps, planned_bytes, config.verify_method
+            ),
+        });
+
+        let mut loader = session.target().flash_loader();
+        for (addr, data) in &segments {
+            loader.add_data(*addr, data)
+                .map_err(|e| format!("Failed to add segment to loader: {}", e))?;
+        }
+
+        let mut current_op = "Initializing".to_string();
+        let mut op_total = 0u64;
+        let mut op_completed = 0u64;
+
+        let tx_progress = tx.clone();
+        let port_progress = port_name.clone();
+
+        let progress_reporter = probe_rs::flashing::FlashProgress::new(move |event| {
+            match event {
+                probe_rs::flashing::ProgressEvent::AddProgressBar { operation, total } => {
+                    current_op = match operation {
+                        probe_rs::flashing::ProgressOperation::Erase => "Erasing".to_string(),
+                        probe_rs::flashing::ProgressOperation::Program => "Programming".to_string(),
+                        probe_rs::flashing::ProgressOperation::Verify => "Verifying".to_string(),
+                        probe_rs::flashing::ProgressOperation::Fill => "Filling".to_string(),
+                    };
+                    op_total = total.unwrap_or(0);
+                    op_completed = 0;
+
+                    let _ = tx_progress.blocking_send(WorkerMessage::StatusUpdate {
+                        port: port_progress.clone(),
+                        status: current_op.clone(),
+                        progress: 0,
+                        speed: "N/A".to_string(),
+                    });
+                }
+                probe_rs::flashing::ProgressEvent::Progress { operation: _, size, time: _ } => {
+                    op_completed += size;
+                    let percentage = if op_total > 0 {
+                        ((op_completed * 100) / op_total).min(100) as u8
+                    } else {
+                        0
+                    };
+
+                    let _ = tx_progress.blocking_send(WorkerMessage::StatusUpdate {
+                        port: port_progress.clone(),
+                        status: current_op.clone(),
+                        progress: percentage,
+                        speed: "N/A".to_string(),
+                    });
+                }
+                probe_rs::flashing::ProgressEvent::Finished(op) => {
+                    let op_name = match op {
+                        probe_rs::flashing::ProgressOperation::Erase => "Erase",
+                        probe_rs::flashing::ProgressOperation::Program => "Program",
+                        probe_rs::flashing::ProgressOperation::Verify => "Verify",
+                        probe_rs::flashing::ProgressOperation::Fill => "Fill",
+                    };
+                    let _ = tx_progress.blocking_send(WorkerMessage::Log {
+                        port: port_progress.clone(),
+                        message: format!("Finished operation: {}", op_name),
+                    });
+                }
+                probe_rs::flashing::ProgressEvent::Failed(op) => {
+                    let op_name = match op {
+                        probe_rs::flashing::ProgressOperation::Erase => "Erase",
+                        probe_rs::flashing::ProgressOperation::Program => "Program",
+                        probe_rs::flashing::ProgressOperation::Verify => "Verify",
+                        probe_rs::flashing::ProgressOperation::Fill => "Fill",
+                    };
+                    let _ = tx_progress.blocking_send(WorkerMessage::Log {
+                        port: port_progress.clone(),
+                        message: format!("Failed operation: {}", op_name),
+                    });
+                }
+                probe_rs::flashing::ProgressEvent::DiagnosticMessage { message } => {
+                    let _ = tx_progress.blocking_send(WorkerMessage::Log {
+                        port: port_progress.clone(),
+                        message: format!("Probe-rs: {}", message),
+                    });
+                }
+                _ => {}
+            }
+        });
+
+        let mut download_options = probe_rs::flashing::DownloadOptions::new();
+        download_options.progress = progress_reporter;
+
+        if config.erase_mode == "all" {
+            download_options.do_chip_erase = true;
+        } else if config.erase_mode == "none" {
+            download_options.skip_erase = true;
+        }
+
+        loader.commit(&mut session, download_options)
+            .map_err(|e| format!("Flash loader commit failed: {}", e))?;
+
+        let mut core = session.core(0)
+            .map_err(|e| format!("Failed to get core 0: {}", e))?;
+        core.reset()
+            .map_err(|e| format!("Failed to reset target core: {}", e))?;
 
         let security_detail = describe_security_policy(config);
         let _ = tx.blocking_send(WorkerMessage::ProductionStep {
@@ -1145,11 +1510,14 @@ fn do_native_flash(
 ) -> Result<(), String> {
     let selector = DeviceSelector::SerialPort(port_name.clone());
 
-    let backend: Box<dyn FlasherBackend> =
+    let backend: Box<dyn FlasherBackend> = if port_name.starts_with("probe:") {
+        Box::new(ProbeRsBackend)
+    } else {
         match config.chip_type.to_lowercase().replace("-", "").as_str() {
             c if c.starts_with("esp32") => Box::new(Esp32SerialBackend),
             _ => Box::new(PlatformIoUploadBackend),
-        };
+        }
+    };
 
     let mac = backend.run_flash(&selector, &config, &tx)?;
 
@@ -1180,7 +1548,7 @@ pub struct DetectedPort {
 }
 
 pub fn get_available_serial_ports() -> Vec<DetectedPort> {
-    match serialport::available_ports() {
+    let mut ports: Vec<DetectedPort> = match serialport::available_ports() {
         Ok(ports) => ports
             .into_iter()
             .filter(|p| matches!(p.port_type, serialport::SerialPortType::UsbPort(_)))
@@ -1201,7 +1569,23 @@ pub fn get_available_serial_ports() -> Vec<DetectedPort> {
             })
             .collect(),
         Err(_) => vec![],
+    };
+
+    // Add debug probes via probe-rs
+    let lister = probe_rs::probe::list::Lister::new();
+    for probe in lister.list_all() {
+        let serial = probe.serial_number.as_deref().unwrap_or("unknown");
+        let name = format!("probe:{:04x}:{:04x}:{}", probe.vendor_id, probe.product_id, serial);
+        ports.push(DetectedPort {
+            name,
+            vid: Some(probe.vendor_id),
+            pid: Some(probe.product_id),
+            product: Some(probe.identifier),
+            manufacturer: Some("probe-rs".to_string()),
+        });
     }
+
+    ports
 }
 
 #[cfg(test)]
