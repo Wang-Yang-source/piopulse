@@ -231,10 +231,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 },
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
-            Span::styled(
-                display_val,
-                Style::default().fg(CATPPUCCIN_MOCHA.primary),
-            ),
+            Span::styled(display_val, Style::default().fg(CATPPUCCIN_MOCHA.primary)),
         ]));
 
         // Line 3: Description / Metadata

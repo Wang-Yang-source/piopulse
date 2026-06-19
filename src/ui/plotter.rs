@@ -25,7 +25,11 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         .split(area);
 
     app.layout_zones.plotter_header = main_layout[0];
-    app.layout_zones.plotter_send_panel = if show_send_panel { main_layout[2] } else { Rect::default() };
+    app.layout_zones.plotter_send_panel = if show_send_panel {
+        main_layout[2]
+    } else {
+        Rect::default()
+    };
 
     draw_header_bar(f, app, main_layout[0]);
 
@@ -61,7 +65,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_header_bar(f: &mut Frame, app: &App, area: Rect) {
     let selected_port = app
-        .get_selected_port()
+        .get_selected_serial_port()
         .unwrap_or_else(|| "NONE".to_string());
     let is_running = app.plotter_active;
     let lang = &app.tool_config.language;
@@ -163,7 +167,7 @@ fn draw_chart_panel(f: &mut Frame, app: &App, area: Rect) {
             draw_receive_console(f, app, area);
         }
         _ => {
-            let selected_port = app.get_selected_port();
+            let selected_port = app.get_selected_serial_port();
             let history = selected_port
                 .as_ref()
                 .and_then(|port| app.waveform_history.get(port));
@@ -1005,7 +1009,7 @@ fn draw_connection_rail(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
     let selected_port = app
-        .get_selected_port()
+        .get_selected_serial_port()
         .unwrap_or_else(|| "NONE".to_string());
     let mut console_lines = Vec::new();
     let lang = &app.tool_config.language;
@@ -1110,10 +1114,15 @@ fn draw_receive_console(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_port_selector(f: &mut Frame, app: &App, area: Rect) {
-    let ports: Vec<String> = app.channels.iter().map(|c| c.port.clone()).collect();
+    let ports: Vec<String> = app
+        .channels
+        .iter()
+        .filter(|channel| !channel.port.starts_with("probe:"))
+        .map(|channel| channel.port.clone())
+        .collect();
 
     let active_port = app
-        .get_selected_port()
+        .get_selected_serial_port()
         .unwrap_or_else(|| "NONE".to_string());
 
     let lang = &app.tool_config.language;
@@ -1255,7 +1264,7 @@ fn draw_serial_profile(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_telemetry_stats(f: &mut Frame, app: &App, area: Rect) {
-    let selected_port = app.get_selected_port();
+    let selected_port = app.get_selected_serial_port();
     let history = selected_port
         .as_ref()
         .and_then(|port| app.waveform_history.get(port));
@@ -1394,10 +1403,10 @@ fn draw_telemetry_stats(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_send_panel(f: &mut Frame, app: &App, area: Rect) {
     let selected_port = app
-        .get_selected_port()
+        .get_selected_serial_port()
         .unwrap_or_else(|| "NONE".to_string());
     let lang = &app.tool_config.language;
-    let has_port = app.get_selected_port().is_some();
+    let has_port = app.get_selected_serial_port().is_some();
     let tx_state = if has_port {
         tr("plot_tx_state_ready", lang)
     } else {
@@ -1513,6 +1522,7 @@ fn draw_code_reference(f: &mut Frame, app: &App, area: Rect) {
         crate::vofa::VofaMode::FireWater => "FireWater (CSV String)",
         crate::vofa::VofaMode::JustFloat => "JustFloat (Binary Hex)",
         crate::vofa::VofaMode::IndexFloat => "IndexFloat (Indexed Hex)",
+        crate::vofa::VofaMode::RawData => "RawData (Plain Stream)",
     };
 
     let code_lines = match app.vofa_mode {
@@ -1588,6 +1598,28 @@ fn draw_code_reference(f: &mut Frame, app: &App, area: Rect) {
             Line::from(Span::styled(
                 "}",
                 Style::default().fg(CATPPUCCIN_MOCHA.text),
+            )),
+        ],
+        crate::vofa::VofaMode::RawData => vec![
+            Line::from(Span::styled(
+                "// C Language Raw Stream Template",
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            )),
+            Line::from(Span::styled(
+                "void send_telemetry(const char* data, int len) {",
+                Style::default().fg(CATPPUCCIN_MOCHA.text),
+            )),
+            Line::from(Span::styled(
+                "  uart_write(data, len);",
+                Style::default().fg(CATPPUCCIN_MOCHA.success),
+            )),
+            Line::from(Span::styled(
+                "}",
+                Style::default().fg(CATPPUCCIN_MOCHA.text),
+            )),
+            Line::from(Span::styled(
+                "Note: Telemetry waveform is disabled in RawData mode.",
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             )),
         ],
     };

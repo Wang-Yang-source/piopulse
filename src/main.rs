@@ -17,8 +17,20 @@ use crossterm::{
 };
 use futures::StreamExt;
 use ratatui::{Terminal, backend::CrosstermBackend};
-use std::{io, time::Duration};
+use std::{io, sync::Arc, time::Duration};
 use tokio::sync::mpsc;
+
+enum CliMode {
+    Tui {
+        external_platformio_ini: Option<std::path::PathBuf>,
+    },
+    Ports,
+    Flash {
+        external_platformio_ini: Option<std::path::PathBuf>,
+        port: Option<String>,
+        all: bool,
+    },
+}
 
 #[cfg(unix)]
 async fn shutdown_signal() -> io::Result<()> {
@@ -44,59 +56,298 @@ fn restore_terminal() {
     let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Parse command line arguments
-    let args: Vec<String> = std::env::args().collect();
+fn print_help() {
+    println!("PioPulse - embedded flashing and serial production tool");
+    println!();
+    println!("Usage:");
+    println!("  piopulse                         Start TUI");
+    println!("  piopulse ports                   List detected devices");
+    println!("  piopulse flash [--all]           Flash detected device(s) without TUI");
+    println!("  piopulse flash --port <name>     Flash one device without TUI");
+    println!("  piopulse [platformio.ini]        Start TUI using a PlatformIO project");
+    println!();
+    println!("Options:");
+    println!("  -h, --help                       Show this help message");
+    println!("  -v, --version                    Show version information");
+    println!("  --platformio-ini, --pio-ini FILE Use an external platformio.ini");
+}
+
+fn parse_cli_args(args: &[String]) -> CliMode {
     let mut external_platformio_ini: Option<std::path::PathBuf> = None;
-    if args.len() > 1 {
-        let mut idx = 1;
-        while idx < args.len() {
-            match args[idx].as_str() {
-                "--version" | "-v" | "version" => {
-                    println!("piopulse {}", env!("CARGO_PKG_VERSION"));
-                    return Ok(());
-                }
-                "--help" | "-h" | "help" => {
-                    println!("PioPulse - ESP32 Factory Flashing TUI Tool");
-                    println!();
-                    println!("Usage:");
-                    println!("  piopulse [options]");
-                    println!();
-                    println!("Options:");
-                    println!("  -h, --help     Show this help message");
-                    println!("  -v, --version  Show version information");
-                    println!(
-                        "  --platformio-ini <file>  Use an external platformio.ini for this source directory"
-                    );
-                    return Ok(());
-                }
-                "--platformio-ini" | "--pio-ini" => {
-                    idx += 1;
-                    if idx >= args.len() {
-                        eprintln!("Error: --platformio-ini requires a file path.");
-                        std::process::exit(1);
+    if args.len() <= 1 {
+        return CliMode::Tui {
+            external_platformio_ini,
+        };
+    }
+
+    match args[1].as_str() {
+        "--version" | "-v" | "version" => {
+            println!("piopulse {}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
+        "--help" | "-h" | "help" => {
+            print_help();
+            std::process::exit(0);
+        }
+        "ports" | "devices" => CliMode::Ports,
+        "flash" => {
+            let mut idx = 2;
+            let mut port = None;
+            let mut all = false;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--all" | "-a" => all = true,
+                    "--port" | "-p" => {
+                        idx += 1;
+                        if idx >= args.len() {
+                            eprintln!("Error: --port requires a device name.");
+                            std::process::exit(2);
+                        }
+                        port = Some(args[idx].clone());
                     }
-                    external_platformio_ini = Some(std::path::PathBuf::from(&args[idx]));
-                }
-                _ => {
-                    let path = std::path::PathBuf::from(&args[idx]);
-                    if path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| name == "platformio.ini")
-                    {
-                        external_platformio_ini = Some(path);
-                    } else {
-                        eprintln!("Error: Unknown argument '{}'", args[idx]);
+                    "--platformio-ini" | "--pio-ini" => {
+                        idx += 1;
+                        if idx >= args.len() {
+                            eprintln!("Error: --platformio-ini requires a file path.");
+                            std::process::exit(2);
+                        }
+                        external_platformio_ini = Some(std::path::PathBuf::from(&args[idx]));
+                    }
+                    other => {
+                        eprintln!("Error: Unknown flash argument '{}'", other);
                         eprintln!("Run 'piopulse --help' for usage details.");
-                        std::process::exit(1);
+                        std::process::exit(2);
                     }
                 }
+                idx += 1;
             }
-            idx += 1;
+            CliMode::Flash {
+                external_platformio_ini,
+                port,
+                all,
+            }
+        }
+        _ => {
+            let mut idx = 1;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--platformio-ini" | "--pio-ini" => {
+                        idx += 1;
+                        if idx >= args.len() {
+                            eprintln!("Error: --platformio-ini requires a file path.");
+                            std::process::exit(2);
+                        }
+                        external_platformio_ini = Some(std::path::PathBuf::from(&args[idx]));
+                    }
+                    other => {
+                        let path = std::path::PathBuf::from(other);
+                        if path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name == "platformio.ini")
+                        {
+                            external_platformio_ini = Some(path);
+                        } else {
+                            eprintln!("Error: Unknown argument '{}'", other);
+                            eprintln!("Run 'piopulse --help' for usage details.");
+                            std::process::exit(2);
+                        }
+                    }
+                }
+                idx += 1;
+            }
+            CliMode::Tui {
+                external_platformio_ini,
+            }
         }
     }
+}
+
+fn print_detected_ports() {
+    let ports = worker::get_available_serial_ports();
+    if ports.is_empty() {
+        println!("No devices detected.");
+        return;
+    }
+    for port in ports {
+        println!(
+            "{}\tvid={}\tpid={}\tproduct={}\tmanufacturer={}",
+            port.name,
+            port.vid
+                .map(|v| format!("{:04x}", v))
+                .unwrap_or_else(|| "-".to_string()),
+            port.pid
+                .map(|p| format!("{:04x}", p))
+                .unwrap_or_else(|| "-".to_string()),
+            port.product.unwrap_or_else(|| "-".to_string()),
+            port.manufacturer.unwrap_or_else(|| "-".to_string())
+        );
+    }
+}
+
+async fn run_cli_flash(
+    external_platformio_ini: Option<std::path::PathBuf>,
+    requested_port: Option<String>,
+    all: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = "build/piopulse.toml".to_string();
+    let mut app = match external_platformio_ini {
+        Some(pio_ini) => App::new_with_platformio_ini(config_path, Some(pio_ini)),
+        None => App::new(config_path),
+    };
+    app.scan_ports(None);
+
+    if !app.ensure_flash_manifest_ready() {
+        return Err("flash manifest is not ready".into());
+    }
+
+    let target_ports = if let Some(port) = requested_port {
+        vec![port]
+    } else if all {
+        app.channels
+            .iter()
+            .map(|channel| channel.port.clone())
+            .collect()
+    } else {
+        match app.channels.as_slice() {
+            [] => return Err("no devices detected".into()),
+            [channel] => vec![channel.port.clone()],
+            _ => {
+                return Err(
+                    "multiple devices detected; use `piopulse flash --all` or `--port <name>`"
+                        .into(),
+                );
+            }
+        }
+    };
+
+    if target_ports.is_empty() {
+        return Err("no devices selected for flashing".into());
+    }
+
+    println!("PioPulse CLI flash: {} device(s)", target_ports.len());
+    println!("Config: {}", app.config_path);
+    app.log(format!(
+        "--- CLI Flash Started for {} device(s) ---",
+        target_ports.len()
+    ));
+
+    let (tx, mut rx) = mpsc::channel::<worker::WorkerMessage>(200);
+    let config = Arc::new(app.config.clone());
+    for port in &target_ports {
+        println!("[{}] start", port);
+        app.log(format!("[{}] CLI flash queued.", port));
+        worker::start_flashing_task(port.clone(), config.clone(), tx.clone());
+    }
+    drop(tx);
+
+    let mut finished = 0usize;
+    let mut failed = 0usize;
+    while let Some(message) = rx.recv().await {
+        match message {
+            worker::WorkerMessage::StatusUpdate {
+                port,
+                status,
+                progress,
+                speed,
+            } => {
+                let line = format!("[{}] STATUS {}% {} ({})", port, progress, status, speed);
+                println!("{}", line);
+                app.log(line);
+            }
+            worker::WorkerMessage::MacAddressDetected { port, mac, chip } => {
+                let line = format!("[{}] DETECTED chip={} mac={}", port, chip, mac);
+                println!("{}", line);
+                app.log(line);
+            }
+            worker::WorkerMessage::ProvisioningGenerated {
+                port,
+                serial_number,
+                device_name,
+            } => {
+                let line = format!(
+                    "[{}] PROVISION serial={} device={}",
+                    port, serial_number, device_name
+                );
+                println!("{}", line);
+                app.log(line);
+            }
+            worker::WorkerMessage::ProductionStep { port, step, detail } => {
+                let line = format!("[{}] STEP {}={}", port, step, detail);
+                println!("{}", line);
+                app.log(line);
+            }
+            worker::WorkerMessage::Log { port, message } => {
+                let line = format!("[{}] {}", port, message);
+                println!("{}", line);
+                app.log(line);
+            }
+            worker::WorkerMessage::Finished {
+                port,
+                success,
+                error_msg,
+                mac,
+            } => {
+                finished += 1;
+                if !success {
+                    failed += 1;
+                }
+                let line = format!(
+                    "[{}] FINISHED result={} mac={} error={}",
+                    port,
+                    if success { "OK" } else { "FAIL" },
+                    mac.unwrap_or_else(|| "-".to_string()),
+                    error_msg.clone().unwrap_or_default()
+                );
+                println!("{}", line);
+                app.log(line);
+                if let Some(err) = error_msg {
+                    eprintln!("[{}] error: {}", port, err);
+                }
+                if finished >= target_ports.len() {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let passed = target_ports.len().saturating_sub(failed);
+    println!("Summary: passed={}, failed={}", passed, failed);
+    app.log(format!(
+        "--- CLI Flash Completed. Passed: {}, Failed: {} ---",
+        passed, failed
+    ));
+
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(format!("{} device(s) failed", failed).into())
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    let cli_mode = parse_cli_args(&args);
+
+    let external_platformio_ini = match cli_mode {
+        CliMode::Ports => {
+            print_detected_ports();
+            return Ok(());
+        }
+        CliMode::Flash {
+            external_platformio_ini,
+            port,
+            all,
+        } => {
+            return run_cli_flash(external_platformio_ini, port, all).await;
+        }
+        CliMode::Tui {
+            external_platformio_ini,
+        } => external_platformio_ini,
+    };
+
     // Setup panic hook to restore terminal
     std::panic::set_hook(Box::new(|info| {
         restore_terminal();
@@ -328,6 +579,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         KeyCode::Char(c) => {
                                             app.edit_buffer.push(c);
+                                        }
+                                        _ => {}
+                                    }
+                                } else if app.show_manifest_delete_confirm {
+                                    match key.code {
+                                        KeyCode::Enter => {
+                                            app.confirm_manifest_delete();
+                                        }
+                                        KeyCode::Esc => {
+                                            app.show_manifest_delete_confirm = false;
+                                            app.manifest_delete_image_label.clear();
                                         }
                                         _ => {}
                                     }

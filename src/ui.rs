@@ -84,6 +84,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         modal::draw_auto_reply(f, app, area);
     }
 
+    if app.show_manifest_delete_confirm {
+        let area = responsive_modal_rect(52, 9, f.size());
+        app.layout_zones.manifest_delete_modal = area;
+        modal::draw_manifest_delete_confirm(f, app, area);
+    }
+
     if app.show_manifest_edit_modal {
         let area = responsive_modal_rect(52, 9, f.size());
         app.layout_zones.manifest_edit_modal = area;

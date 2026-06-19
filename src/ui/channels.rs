@@ -1,5 +1,4 @@
 use crate::app::{App, Channel};
-use crate::config::ImageValidationResult;
 use crate::ui::theme::{CATPPUCCIN_MOCHA, mocha};
 use crate::ui::tr;
 use ratatui::{
@@ -589,7 +588,11 @@ fn enabled_label(enabled: bool, lang: &str) -> &'static str {
 fn flash_usable_status(channel: &Channel, lang: &str) -> (&'static str, Style) {
     if channel.usb_manufacturer.as_deref() == Some("probe-rs") {
         return (
-            if lang == "zh" { "调试器" } else { "Debug Probe" },
+            if lang == "zh" {
+                "调试器"
+            } else {
+                "Debug Probe"
+            },
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.success)
                 .add_modifier(Modifier::BOLD),
@@ -886,7 +889,8 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
     app.layout_zones.flash_manifest_table = chunks[1];
 
     // Validation
-    let (image_results, validation_errors) = app.config.validate_manifest();
+    let (_, validation_errors) = app.config.validate_manifest();
+    app.layout_zones.flash_manifest_status = chunks[2];
 
     // Manifest Table
     let mut rows = Vec::new();
@@ -896,22 +900,17 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
         vec!["Offset", "File Name", "Size", "SHA256", "Status"]
     };
 
-    // Filter image results for current mode
-    let filtered_results: Vec<&ImageValidationResult> = image_results
-        .iter()
-        .filter(|res| {
-            let is_merged = res.label.contains("merged")
-                || res.path.ends_with("factory_merged.bin")
-                || res.path.ends_with("merged.bin");
-            app.use_merged_flash == is_merged
-        })
-        .collect();
+    let filtered_results = app.config.manifest_results_for_mode(app.use_merged_flash);
 
     for res in &filtered_results {
-        let filename = Path::new(&res.path)
-            .file_name()
-            .and_then(|f| f.to_str())
-            .unwrap_or(&res.path);
+        let filename = if res.path.trim().is_empty() {
+            ""
+        } else {
+            Path::new(&res.path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or(&res.path)
+        };
 
         let size_str = match res.size_bytes {
             Some(sz) => format_bytes(sz as usize),
@@ -938,7 +937,12 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
             None => Span::styled("N/A", Style::default().fg(CATPPUCCIN_MOCHA.text_muted)),
         };
 
-        let status_span = if res.exists {
+        let status_span = if res.path.trim().is_empty() {
+            Span::styled(
+                if lang == "zh" { "空" } else { "EMPTY" },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            )
+        } else if res.exists {
             Span::styled(
                 if lang == "zh" { "正常" } else { "OK" },
                 Style::default().fg(CATPPUCCIN_MOCHA.success),
@@ -1028,10 +1032,21 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let status_widget = if filtered_errors.is_empty() {
-        let text = if lang == "zh" {
-            " 就绪: 所有固件校验通过，可安全烧录 "
+        let text = if app.manifest_locked {
+            if lang == "zh" {
+                " 清单已锁定: 点击此状态条解锁 "
+            } else {
+                " MANIFEST LOCKED: Click this status bar to unlock "
+            }
+        } else if lang == "zh" {
+            " 就绪: 校验通过 | 点击此状态条锁定清单 "
         } else {
-            " READY: All binaries verified, ready to flash "
+            " READY: Verified | Click this status bar to lock manifest "
+        };
+        let border_color = if app.manifest_locked {
+            CATPPUCCIN_MOCHA.warning
+        } else {
+            CATPPUCCIN_MOCHA.success
         };
         Paragraph::new(text)
             .alignment(ratatui::layout::Alignment::Center)
@@ -1039,16 +1054,41 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(CATPPUCCIN_MOCHA.success))
+                    .border_style(Style::default().fg(border_color))
                     .style(Style::default().bg(mocha::SURFACE0)),
             )
             .style(
                 Style::default()
-                    .fg(CATPPUCCIN_MOCHA.success)
+                    .fg(border_color)
                     .add_modifier(Modifier::BOLD),
             )
     } else {
-        let err_text = filtered_errors.join(" | ");
+        let lock_prefix = if app.manifest_locked {
+            if lang == "zh" {
+                "清单已锁定 | "
+            } else {
+                "LOCKED | "
+            }
+        } else {
+            ""
+        };
+        let lock_suffix = if app.manifest_locked {
+            if lang == "zh" {
+                " | 点击解锁"
+            } else {
+                " | Click to unlock"
+            }
+        } else if lang == "zh" {
+            " | 点击锁定"
+        } else {
+            " | Click to lock"
+        };
+        let err_text = format!(
+            "{}{}{}",
+            lock_prefix,
+            filtered_errors.join(" | "),
+            lock_suffix
+        );
         Paragraph::new(err_text)
             .alignment(ratatui::layout::Alignment::Left)
             .wrap(Wrap { trim: true })

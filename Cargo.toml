@@ -1,6 +1,6 @@
 [package]
 name = "piopulse"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2024"
 description = "A terminal user interface (TUI) embedded debugger for serial debugging, telemetry plotting, dashboards, and ESP32 flashing."
 license = "MIT"

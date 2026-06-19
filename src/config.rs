@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const PROJECT_CONFIG_FIELD_COUNT: usize = 30;
+pub const MANIFEST_SLOT_COUNT: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
@@ -55,6 +56,7 @@ pub struct ProjectConfig {
     pub merged_offset: String,
     pub images: Vec<FirmwareImage>,
     pub use_merged_flash: bool,
+    pub manifest_locked: bool,
     #[serde(skip)]
     pub platformio_project_dir: String,
     #[serde(skip)]
@@ -98,6 +100,7 @@ impl Default for ProjectConfig {
             merged_offset: "0x0000".to_string(),
             images: Vec::new(),
             use_merged_flash: false,
+            manifest_locked: false,
             platformio_project_dir: String::new(),
             factory_dir: String::new(),
         }
@@ -375,7 +378,7 @@ impl ProjectConfig {
                 "0x0000".to_string()
             },
             baud_rate,
-            chip_type: if is_esp_platformio_env {
+            chip_type: if is_esp_platformio_env || chip_type != "Auto" {
                 chip_type
             } else {
                 "Auto".to_string()
@@ -448,10 +451,10 @@ impl ProjectConfig {
         ];
 
         let native_program_candidates = vec![
-            PathBuf::from(&self.app_path),
-            build_dir.join("program"),
             build_dir.join("firmware.elf"),
             build_dir.join("firmware.bin"),
+            build_dir.join("program"),
+            PathBuf::from(&self.app_path),
         ];
 
         let needs_build = if is_esp_package {
@@ -494,23 +497,11 @@ impl ProjectConfig {
             fs::create_dir_all(&factory_dir)
                 .map_err(|e| format!("Failed to create {}: {}", factory_dir.display(), e))?;
 
-            let artifact_name = program_src
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("program");
-            let packaged_name = if artifact_name == "program" {
-                "program".to_string()
-            } else {
-                artifact_name.to_string()
-            };
-            let packaged_path = factory_dir.join(&packaged_name);
-            copy_factory_file(&program_src, &packaged_path)?;
-
             let mut packaged = self.clone();
             packaged.bootloader_path.clear();
             packaged.partitions_path.clear();
             packaged.otadata_path.clear();
-            packaged.app_path = packaged_path.to_string_lossy().to_string();
+            packaged.app_path = program_src.to_string_lossy().to_string();
             packaged.app_offset = "0x0000".to_string();
             packaged.nvs_offset.clear();
             packaged.use_merged_flash = false;
@@ -578,7 +569,7 @@ impl ProjectConfig {
         packaged.otadata_offset = "0xe000".to_string();
         packaged.app_path = "firmware.bin".to_string();
         packaged.app_offset = "0x10000".to_string();
-        packaged.use_merged_flash = false;
+        packaged.use_merged_flash = true;
         packaged.merged_offset = "0x0000".to_string();
         packaged.flash_encryption_mode = if packaged.flash_encryption {
             "device_runtime".to_string()
@@ -834,16 +825,12 @@ impl ProjectConfig {
         let mut image_results = Vec::new();
         let mut errors = Vec::new();
 
-        // 1. Check chip type (only error if not Auto and not mappable)
+        // 1. Do not whitelist chip families here. Debug-probe targets are resolved by
+        // probe-rs at flash time, and unsupported probe-rs targets can fall back to
+        // PlatformIO's uploader.
         let chip_lower = self.chip_type.to_lowercase();
-        if chip_lower != "auto" {
-            // A basic check to see if it starts with esp32
-            if !chip_lower.starts_with("esp32") && !chip_lower.starts_with("esp") {
-                errors.push(format!(
-                    "Unsupported target chip type: '{}'",
-                    self.chip_type
-                ));
-            }
+        if chip_lower.trim().is_empty() {
+            errors.push("Target chip type is empty".to_string());
         }
 
         // 2. Track offsets to check for duplicates
@@ -855,6 +842,20 @@ impl ProjectConfig {
             let mut size_bytes = None;
             let mut sha256_match = None;
             let mut img_error = None;
+            let path_is_empty = img.path.trim().is_empty();
+
+            if !img.required && path_is_empty {
+                image_results.push(ImageValidationResult {
+                    label: img.label.clone(),
+                    offset: img.offset.clone(),
+                    path: img.path.clone(),
+                    size_bytes,
+                    exists,
+                    sha256_match,
+                    error: img_error,
+                });
+                continue;
+            }
 
             // Offset validation
             let _offset_val = match parse_offset(&img.offset) {
@@ -877,7 +878,7 @@ impl ProjectConfig {
             };
 
             // Path & Exists validation
-            if img.path.is_empty() {
+            if path_is_empty {
                 if img.required {
                     errors.push(format!("Required image '{}' path is empty", img.label));
                     img_error = Some("Path is empty".to_string());
@@ -940,6 +941,117 @@ impl ProjectConfig {
         (image_results, errors)
     }
 
+    pub fn manifest_results_for_mode(&self, use_merged_flash: bool) -> Vec<ImageValidationResult> {
+        let (image_results, _) = self.validate_manifest();
+        let mut filtered_results: Vec<ImageValidationResult> = image_results
+            .into_iter()
+            .filter(|res| use_merged_flash == is_merged_manifest_entry(&res.label, &res.path))
+            .collect();
+
+        if !use_merged_flash {
+            let mut slot_index = 1;
+            while filtered_results.len() < MANIFEST_SLOT_COUNT {
+                let label = manifest_slot_label(slot_index);
+                slot_index += 1;
+                if filtered_results.iter().any(|res| res.label == label) {
+                    continue;
+                }
+                filtered_results.push(ImageValidationResult {
+                    label,
+                    offset: String::new(),
+                    path: String::new(),
+                    size_bytes: None,
+                    exists: false,
+                    sha256_match: None,
+                    error: None,
+                });
+            }
+        }
+
+        filtered_results
+    }
+
+    pub fn ensure_manifest_image(&mut self, label: &str) -> &mut FirmwareImage {
+        if let Some(pos) = self.images.iter().position(|img| img.label == label) {
+            return &mut self.images[pos];
+        }
+
+        self.images.push(FirmwareImage {
+            label: label.to_string(),
+            path: String::new(),
+            offset: String::new(),
+            required: false,
+            encrypted: false,
+            sha256: None,
+        });
+        let last = self.images.len().saturating_sub(1);
+        &mut self.images[last]
+    }
+
+    pub fn clear_manifest_image(&mut self, label: &str) -> bool {
+        let Some(pos) = self.images.iter().position(|img| img.label == label) else {
+            return false;
+        };
+
+        let had_content = {
+            let img = &self.images[pos];
+            !img.path.trim().is_empty()
+                || !img.offset.trim().is_empty()
+                || img
+                    .sha256
+                    .as_deref()
+                    .is_some_and(|sha| !sha.trim().is_empty())
+        };
+
+        let is_builtin = matches!(
+            label,
+            "bootloader"
+                | "partitions"
+                | "boot_app0"
+                | "firmware"
+                | "program"
+                | "factory_merged"
+                | "merged"
+        );
+
+        if !is_builtin {
+            self.images.remove(pos);
+            return had_content;
+        }
+
+        let img = &mut self.images[pos];
+        img.path.clear();
+        img.offset.clear();
+        img.required = false;
+        img.encrypted = false;
+        img.sha256 = None;
+
+        match label {
+            "bootloader" => {
+                self.bootloader_path.clear();
+                self.bootloader_offset.clear();
+            }
+            "partitions" => {
+                self.partitions_path.clear();
+                self.partitions_offset.clear();
+            }
+            "boot_app0" => {
+                self.otadata_path.clear();
+                self.otadata_offset.clear();
+            }
+            "firmware" | "program" => {
+                self.app_path.clear();
+                self.app_offset.clear();
+            }
+            "factory_merged" | "merged" => {
+                self.merged_offset.clear();
+            }
+            _ => {}
+        }
+
+        had_content
+    }
+
     pub fn sync_flat_fields_to_images(&mut self) {
         let mut update_or_insert = |label: &str, path: &str, offset: &str| {
             if path.is_empty() {
@@ -992,6 +1104,14 @@ impl ProjectConfig {
             }
         }
     }
+}
+
+pub fn is_merged_manifest_entry(label: &str, path: &str) -> bool {
+    label.contains("merged") || path.ends_with("factory_merged.bin") || path.ends_with("merged.bin")
+}
+
+pub fn manifest_slot_label(index: usize) -> String {
+    format!("slot_{}", index)
 }
 
 fn existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
@@ -1317,14 +1437,27 @@ fn read_platformio_board_manifest(board: &str) -> Option<serde_json::Value> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()?;
-    let path = PathBuf::from(home)
-        .join(".platformio")
-        .join("platforms")
+    let platforms_dir = PathBuf::from(home).join(".platformio").join("platforms");
+
+    let espressif_path = platforms_dir
         .join("espressif32")
         .join("boards")
         .join(format!("{}.json", board));
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
+    if let Ok(content) = std::fs::read_to_string(espressif_path) {
+        return serde_json::from_str(&content).ok();
+    }
+
+    let entries = std::fs::read_dir(platforms_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path().join("boards").join(format!("{}.json", board));
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(manifest) = serde_json::from_str(&content) {
+                return Some(manifest);
+            }
+        }
+    }
+
+    None
 }
 
 fn board_manifest_build_string(manifest: Option<&serde_json::Value>, key: &str) -> Option<String> {
@@ -1407,6 +1540,10 @@ fn chip_type_from_board(board: &str, manifest: Option<&serde_json::Value>) -> St
     let candidates = [
         Some(board),
         manifest
+            .and_then(|value| value.get("debug"))
+            .and_then(|debug| debug.get("jlink_device"))
+            .and_then(|value| value.as_str()),
+        manifest
             .and_then(|value| value.get("build"))
             .and_then(|build| build.get("mcu"))
             .and_then(|value| value.as_str()),
@@ -1442,9 +1579,34 @@ fn chip_type_from_board(board: &str, manifest: Option<&serde_json::Value>) -> St
         if normalized.contains("esp32") {
             return "ESP32".to_string();
         }
+        if let Some(stm32_chip) = stm32_chip_type_from_candidate(candidate) {
+            return stm32_chip;
+        }
     }
 
     "Auto".to_string()
+}
+
+fn stm32_chip_type_from_candidate(candidate: &str) -> Option<String> {
+    let normalized = normalize_chip_name(candidate);
+    let start = normalized.find("stm32")?;
+    let chip = &normalized[start..];
+    if chip.len() < "stm32f103c8".len() {
+        return None;
+    }
+
+    let mut end = chip.len();
+    if end >= 13 {
+        let suffix = &chip[end - 2..];
+        let mut chars = suffix.chars();
+        if matches!(chars.next(), Some('a'..='z'))
+            && matches!(chars.next(), Some('0'..='9' | 'a'..='z'))
+        {
+            end -= 2;
+        }
+    }
+
+    Some(chip[..end].to_ascii_uppercase())
 }
 
 fn normalize_chip_name(value: &str) -> String {
@@ -1576,6 +1738,7 @@ flash_mode = "dio"
 flash_freq = "80m"
 flash_size = "16MB"
 do_not_chg_bin = true
+manifest_locked = true
 
 [[images]]
 label = "firmware"
@@ -1589,6 +1752,7 @@ required = true
 
         assert_eq!(config.name, "Factory Package");
         assert!(config.do_not_chg_bin);
+        assert!(config.manifest_locked);
         assert_eq!(config.images.len(), 1);
         assert_eq!(
             config.images[0].path,
@@ -1659,6 +1823,7 @@ required = true
         );
         assert!(!merged.encrypted);
         assert_eq!(packaged.merged_offset, "0x0000");
+        assert!(packaged.use_merged_flash);
         assert_eq!(packaged.flash_encryption_mode, "disabled");
 
         let merged_data = std::fs::read(factory_dir.join("factory_merged.bin")).unwrap();
@@ -1713,11 +1878,15 @@ platform = native
         let factory_dir = project_dir.join("build");
 
         assert!(factory_dir.join("piopulse.toml").exists());
-        assert!(factory_dir.join("program").exists());
+        assert!(!factory_dir.join("program").exists());
         assert!(!factory_dir.join("bootloader.bin").exists());
         assert!(!factory_dir.join("partitions.bin").exists());
         assert_eq!(packaged.images.len(), 1);
         assert_eq!(packaged.images[0].label, "program");
+        assert_eq!(
+            packaged.images[0].path,
+            build_dir.join("program").to_string_lossy().to_string()
+        );
         assert_eq!(packaged.images[0].offset, "0x0000");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1763,6 +1932,28 @@ platform = native
     #[test]
     fn test_platformio_board_name_detects_hyphenated_esp32c3() {
         assert_eq!(chip_type_from_board("esp32-c3-devkitm-1", None), "ESP32-C3");
+    }
+
+    #[test]
+    fn test_platformio_stm32_board_manifest_detects_probe_rs_chip() {
+        let manifest = serde_json::json!({
+            "build": {
+                "mcu": "stm32f103c8t6"
+            },
+            "debug": {
+                "jlink_device": "STM32F103C8"
+            },
+            "name": "BluePill F103C8"
+        });
+
+        assert_eq!(
+            chip_type_from_board("bluepill_f103c8", Some(&manifest)),
+            "STM32F103C8"
+        );
+        assert_eq!(
+            stm32_chip_type_from_candidate("stm32f103c8t6"),
+            Some("STM32F103C8".to_string())
+        );
     }
 
     #[test]
@@ -1831,7 +2022,7 @@ board_build.arduino.custom_bootloader = bootloader_dio_80m.bin
                 label: "duplicate".to_string(),
                 path: "".to_string(),
                 offset: "0x0000".to_string(),
-                required: false,
+                required: true,
                 encrypted: false,
                 sha256: None,
             },
@@ -1840,10 +2031,60 @@ board_build.arduino.custom_bootloader = bootloader_dio_80m.bin
         let (results, errors) = config.validate_manifest();
         assert_eq!(results.len(), 2);
 
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("Required image") && e.contains("empty")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Required image") && e.contains("empty"))
+        );
         assert!(errors.iter().any(|e| e.contains("Duplicate offset")));
+    }
+
+    #[test]
+    fn test_optional_empty_manifest_slot_is_ignored() {
+        let mut config = ProjectConfig::default();
+        config.images = vec![FirmwareImage {
+            label: "slot_1".to_string(),
+            path: "".to_string(),
+            offset: "0x0000".to_string(),
+            required: false,
+            encrypted: false,
+            sha256: None,
+        }];
+
+        let (results, errors) = config.validate_manifest();
+        assert_eq!(results.len(), 1);
+        assert!(errors.is_empty());
+        assert_eq!(results[0].label, "slot_1");
+    }
+
+    #[test]
+    fn test_manifest_validation_accepts_stm32_probe_rs_target() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "piopulse_stm32_manifest_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let firmware_path = temp_dir.join("firmware.elf");
+        std::fs::write(&firmware_path, [0x7f, b'E', b'L', b'F']).unwrap();
+
+        let mut config = ProjectConfig::default();
+        config.chip_type = "STM32F103C8".to_string();
+        config.images = vec![FirmwareImage {
+            label: "program".to_string(),
+            path: firmware_path.to_string_lossy().to_string(),
+            offset: "0x0000".to_string(),
+            required: true,
+            encrypted: false,
+            sha256: None,
+        }];
+
+        let (_, errors) = config.validate_manifest();
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -1921,8 +2162,11 @@ board_build.arduino.custom_bootloader = bootloader_dio_80m.bin
         ];
 
         let cmd_segmented = crate::worker::generate_esptool_command("/dev/ttyUSB0", &config, false);
-        assert!(cmd_segmented
-            .contains("esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 921600 write_flash"));
+        assert!(
+            cmd_segmented.contains(
+                "esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 921600 write_flash"
+            )
+        );
         assert!(cmd_segmented.contains("--flash_mode dio"));
         assert!(cmd_segmented.contains("--flash_freq 80m"));
         assert!(cmd_segmented.contains("--flash_size 16MB"));
@@ -1970,10 +2214,12 @@ board_build.arduino.custom_bootloader = bootloader_dio_80m.bin
 
         // Clear path should remove it from images
         config.set_field(13, "".to_string());
-        assert!(config
-            .images
-            .iter()
-            .find(|img| img.label == "firmware")
-            .is_none());
+        assert!(
+            config
+                .images
+                .iter()
+                .find(|img| img.label == "firmware")
+                .is_none()
+        );
     }
 }

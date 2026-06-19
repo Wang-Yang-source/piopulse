@@ -34,7 +34,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(if show_msg { 1 } else { 0 }), // Title line
-            Constraint::Length(3), // Input box
+            Constraint::Length(3),                            // Input box
             Constraint::Length(if show_cancel { 1 } else { 0 }), // Help / Cancel line
             Constraint::Length(if app.password_incorrect { 1 } else { 0 }), // Error line
             Constraint::Min(0),
@@ -98,10 +98,10 @@ pub fn draw_exit_menu(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Title
+            Constraint::Length(1),                                 // Title
             Constraint::Length(if show_question { 2 } else { 0 }), // Text question
-            Constraint::Length(3), // Two side-by-side cards
-            Constraint::Length(if show_hint { 1 } else { 0 }),    // Hint
+            Constraint::Length(3),                                 // Two side-by-side cards
+            Constraint::Length(if show_hint { 1 } else { 0 }),     // Hint
         ])
         .split(inner_area);
 
@@ -230,10 +230,10 @@ pub fn draw_tool_settings(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Title
+            Constraint::Length(1),                                 // Title
             Constraint::Length(if show_question { 2 } else { 0 }), // Text question
-            Constraint::Length(3), // Two side-by-side cards
-            Constraint::Length(if show_hint { 1 } else { 0 }),    // Hint
+            Constraint::Length(3),                                 // Two side-by-side cards
+            Constraint::Length(if show_hint { 1 } else { 0 }),     // Hint
         ])
         .split(inner_area);
 
@@ -369,26 +369,27 @@ pub fn draw_port_menu(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),    // List of ports
+            Constraint::Min(1),                                // List of ports
             Constraint::Length(if show_hint { 1 } else { 0 }), // Hint
         ])
         .split(inner_area);
 
     let mut items = Vec::new();
-    for channel in &app.channels {
+    for channel_idx in app.visible_port_indices_for_active_tab() {
+        let channel = &app.channels[channel_idx];
         let display_name = if let Some(ref prod) = channel.usb_product {
             format!("{} ({})", channel.port, prod)
         } else {
             channel.port.clone()
         };
-        items.push(display_name);
+        items.push((channel_idx, display_name));
     }
 
     let list_items: Vec<ratatui::widgets::ListItem> = items
         .iter()
         .enumerate()
-        .map(|(idx, name)| {
-            let is_selected = idx == app.port_menu_selected;
+        .map(|(_, (channel_idx, name))| {
+            let is_selected = *channel_idx == app.port_menu_selected;
             let style = if is_selected {
                 Style::default()
                     .fg(CATPPUCCIN_MOCHA.accent)
@@ -435,8 +436,8 @@ pub fn draw_custom_baud(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Title
-            Constraint::Length(3), // Input box for custom rate
+            Constraint::Length(1),                                // Title
+            Constraint::Length(3),                                // Input box for custom rate
             Constraint::Length(if show_presets { 1 } else { 0 }), // Presets hint
             Constraint::Length(if show_hint { 1 } else { 0 }),    // Help hint
         ])
@@ -533,10 +534,10 @@ pub fn draw_auto_reply(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Title
-            Constraint::Length(3), // Match pattern input
-            Constraint::Length(3), // Response input
-            Constraint::Length(if show_hint { 1 } else { 0 }),    // Help hint
+            Constraint::Length(1),                             // Title
+            Constraint::Length(3),                             // Match pattern input
+            Constraint::Length(3),                             // Response input
+            Constraint::Length(if show_hint { 1 } else { 0 }), // Help hint
         ])
         .split(inner_area);
 
@@ -645,9 +646,9 @@ pub fn draw_manifest_edit(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Title
-            Constraint::Length(3), // Input box
-            Constraint::Length(if show_hint { 1 } else { 0 }),    // Help hint
+            Constraint::Length(1),                             // Title
+            Constraint::Length(3),                             // Input box
+            Constraint::Length(if show_hint { 1 } else { 0 }), // Help hint
         ])
         .split(inner_area);
 
@@ -726,6 +727,93 @@ pub fn draw_manifest_edit(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+pub fn draw_manifest_delete_confirm(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(CATPPUCCIN_MOCHA.danger))
+        .style(Style::default().bg(mocha::MANTLE));
+
+    let inner_area = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+
+    let lang = &app.tool_config.language;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(inner_area);
+
+    let title_text = if lang == "zh" {
+        "删除烧录清单项"
+    } else {
+        "Delete Manifest Entry"
+    };
+    let title = Paragraph::new(Line::from(vec![
+        Span::styled("[!] ", Style::default().fg(CATPPUCCIN_MOCHA.danger)),
+        Span::styled(
+            title_text,
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.danger)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .alignment(Alignment::Center)
+    .style(Style::default().bg(mocha::MANTLE));
+    f.render_widget(title, chunks[0]);
+
+    let question = if lang == "zh" {
+        format!("确认删除 '{}' 这一项吗？", app.manifest_delete_image_label)
+    } else {
+        format!(
+            "Delete '{}' from the flash manifest?",
+            app.manifest_delete_image_label
+        )
+    };
+    f.render_widget(
+        Paragraph::new(question)
+            .alignment(Alignment::Center)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .style(Style::default().fg(CATPPUCCIN_MOCHA.text).bg(mocha::MANTLE)),
+        chunks[1],
+    );
+
+    let impact = if lang == "zh" {
+        "文件、偏移地址和 SHA256 校验都会清空。"
+    } else {
+        "Path, offset and SHA256 check will be cleared."
+    };
+    f.render_widget(
+        Paragraph::new(impact).alignment(Alignment::Center).style(
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text_muted)
+                .bg(mocha::MANTLE),
+        ),
+        chunks[2],
+    );
+
+    let hint = if lang == "zh" {
+        "Enter: 删除 | Esc/点击外部: 取消"
+    } else {
+        "Enter: Delete | Esc/Click outside: Cancel"
+    };
+    f.render_widget(
+        Paragraph::new(hint).alignment(Alignment::Center).style(
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.warning)
+                .bg(mocha::MANTLE)
+                .add_modifier(Modifier::BOLD),
+        ),
+        chunks[3],
+    );
+}
+
 pub fn draw_file_picker(f: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -743,10 +831,10 @@ pub fn draw_file_picker(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Current Directory Title
+            Constraint::Length(1),                               // Current Directory Title
             Constraint::Length(if show_filter { 3 } else { 0 }), // Filter Input
-            Constraint::Min(2),    // List of Items
-            Constraint::Length(if show_hint { 1 } else { 0 }), // Footer hint
+            Constraint::Min(2),                                  // List of Items
+            Constraint::Length(if show_hint { 1 } else { 0 }),   // Footer hint
         ])
         .split(inner_area);
 

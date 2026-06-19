@@ -1,12 +1,13 @@
 use std::sync::atomic::AtomicU8;
 
-pub static ACTIVE_VOFA_MODE: AtomicU8 = AtomicU8::new(0); // 0 = FireWater, 1 = JustFloat, 2 = IndexFloat
+pub static ACTIVE_VOFA_MODE: AtomicU8 = AtomicU8::new(0); // 0 = FireWater, 1 = JustFloat, 2 = IndexFloat, 3 = RawData
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VofaMode {
     FireWater = 0,
     JustFloat = 1,
     IndexFloat = 2,
+    RawData = 3,
 }
 
 impl VofaMode {
@@ -18,7 +19,8 @@ impl VofaMode {
         match val {
             0 => VofaMode::FireWater,
             1 => VofaMode::JustFloat,
-            _ => VofaMode::IndexFloat,
+            2 => VofaMode::IndexFloat,
+            _ => VofaMode::RawData,
         }
     }
 }
@@ -68,95 +70,118 @@ impl VofaParser {
         loop {
             match self.mode {
                 VofaMode::FireWater => {
-                    // FireWater is CSV-like: val1,val2,val3...\n (or \r\n)
                     if let Some(pos) = self.buffer.iter().position(|&b| b == b'\n') {
-                        let is_image_frame =
-                            if let Ok(line_str) = std::str::from_utf8(&self.buffer[..pos]) {
-                                let trimmed = line_str.trim();
-                                if let Some(colon_pos) = trimmed.find(':') {
-                                    let name = trimmed[..colon_pos].trim();
-                                    if name == "image" {
-                                        let datas: Vec<usize> = trimmed[colon_pos + 1..]
-                                            .split(',')
-                                            .filter_map(|s| s.trim().parse::<usize>().ok())
-                                            .collect();
-                                        if datas.len() == 5 {
-                                            Some((datas[0], datas[1], datas[2], datas[3], datas[4]))
-                                        } else {
-                                            None
+                        let line_bytes = &self.buffer[..pos];
+                        if let Ok(line_str) = std::str::from_utf8(line_bytes) {
+                            let line_str_owned = line_str.to_string();
+                            let trimmed = line_str_owned.trim();
+                            let segments: Vec<&str> = trimmed.split(':').collect();
+                            if segments.len() >= 2 {
+                                let name = segments[segments.len() - 2].trim();
+                                let data_part = segments[segments.len() - 1].trim();
+                                if name == "image" {
+                                    let datas: Vec<usize> = data_part
+                                        .split(',')
+                                        .filter_map(|s| s.trim().parse::<usize>().ok())
+                                        .collect();
+                                    if datas.len() == 5 {
+                                        let image_id = datas[0];
+                                        let image_size = datas[1];
+                                        let image_width = datas[2];
+                                        let image_height = datas[3];
+                                        let image_format = datas[4];
+
+                                        if self.buffer.len() < pos + 1 + image_size {
+                                            break; // Wait for full image data
                                         }
+                                        self.buffer.drain(..=pos);
+                                        let image_data =
+                                            self.buffer.drain(..image_size).collect::<Vec<u8>>();
+                                        self.latest_image = Some(VofaImage {
+                                            id: image_id,
+                                            width: image_width,
+                                            height: image_height,
+                                            format: image_format as u8,
+                                            data: image_data,
+                                        });
                                     } else {
-                                        None
+                                        // Invalid image parameters, skip the line
+                                        self.buffer.drain(..=pos);
                                     }
                                 } else {
-                                    None
+                                    // CSV data frame with a prefix name
+                                    let data_part_owned = data_part.to_string();
+                                    self.buffer.drain(..=pos);
+                                    let mut parsed = Vec::new();
+                                    let mut ok = true;
+                                    for s in data_part_owned.split(',') {
+                                        let s = s.trim();
+                                        if s.is_empty() {
+                                            continue;
+                                        }
+                                        if let Ok(v) = s.parse::<f32>() {
+                                            parsed.push(v);
+                                        } else {
+                                            ok = false;
+                                            break;
+                                        }
+                                    }
+                                    if ok && !parsed.is_empty() {
+                                        frames.push(parsed);
+                                    }
                                 }
                             } else {
-                                None
-                            };
-
-                        if let Some((
-                            image_id,
-                            image_size,
-                            image_width,
-                            image_height,
-                            image_format,
-                        )) = is_image_frame
-                        {
-                            if self.buffer.len() < pos + 1 + image_size {
-                                break; // Wait for full image data
-                            }
-                            self.buffer.drain(..=pos);
-                            let image_data = self.buffer.drain(..image_size).collect::<Vec<u8>>();
-                            self.latest_image = Some(VofaImage {
-                                id: image_id,
-                                width: image_width,
-                                height: image_height,
-                                format: image_format as u8,
-                                data: image_data,
-                            });
-                        } else {
-                            let line_bytes = self.buffer.drain(..=pos).collect::<Vec<u8>>();
-                            if let Ok(line_str) = std::str::from_utf8(&line_bytes) {
-                                let trimmed = line_str.trim();
-                                let data_part = if let Some(colon_pos) = trimmed.find(':') {
-                                    &trimmed[colon_pos + 1..]
-                                } else {
-                                    trimmed
-                                };
-                                let parsed: Vec<f32> = data_part
-                                    .split(',')
-                                    .filter_map(|s| s.trim().parse::<f32>().ok())
-                                    .collect();
-                                if !parsed.is_empty() {
+                                // Pure CSV frame without prefix
+                                let trimmed_owned = trimmed.to_string();
+                                self.buffer.drain(..=pos);
+                                let mut parsed = Vec::new();
+                                let mut ok = true;
+                                for s in trimmed_owned.split(',') {
+                                    let s = s.trim();
+                                    if s.is_empty() {
+                                        continue;
+                                    }
+                                    if let Ok(v) = s.parse::<f32>() {
+                                        parsed.push(v);
+                                    } else {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                                if ok && !parsed.is_empty() {
                                     frames.push(parsed);
                                 }
                             }
+                        } else {
+                            // Invalid UTF-8 bytes, drain and skip
+                            self.buffer.drain(..=pos);
                         }
                     } else {
                         break;
                     }
                 }
-                VofaMode::JustFloat => {
-                    // JustFloat is binary floats ending with NaN: [0x00, 0x00, 0x80, 0x7F]
+                VofaMode::JustFloat | VofaMode::IndexFloat => {
                     let tail = [0x00, 0x00, 0x80, 0x7F];
                     if let Some(pos) = self.buffer.windows(4).position(|w| w == tail) {
-                        let is_image = if pos == 20 {
+                        // Check if it is a potential image header.
+                        // Image header is exactly 28 bytes: 5 * i32 + 2 * NaN.
+                        // So the first NaN is at pos >= 20.
+                        let is_image = if pos >= 20 {
                             if self.buffer.len() >= pos + 8 {
                                 self.buffer[pos + 4..pos + 8] == tail
                             } else {
                                 // Heuristics on metadata to see if we should wait for the second NaN
                                 let size = i32::from_le_bytes(
-                                    self.buffer[4..8].try_into().unwrap_or([0; 4]),
+                                    self.buffer[pos - 16..pos - 12].try_into().unwrap_or([0; 4]),
                                 );
                                 let width = i32::from_le_bytes(
-                                    self.buffer[8..12].try_into().unwrap_or([0; 4]),
+                                    self.buffer[pos - 12..pos - 8].try_into().unwrap_or([0; 4]),
                                 );
                                 let height = i32::from_le_bytes(
-                                    self.buffer[12..16].try_into().unwrap_or([0; 4]),
+                                    self.buffer[pos - 8..pos - 4].try_into().unwrap_or([0; 4]),
                                 );
                                 let format = i32::from_le_bytes(
-                                    self.buffer[16..20].try_into().unwrap_or([0; 4]),
+                                    self.buffer[pos - 4..pos].try_into().unwrap_or([0; 4]),
                                 );
 
                                 let looks_like_image_header = size > 0
@@ -165,7 +190,7 @@ impl VofaParser {
                                     && (format >= 0 && format <= 34);
 
                                 if looks_like_image_header {
-                                    break; // wait for more data
+                                    break; // wait for the second NaN to arrive
                                 }
                                 false
                             }
@@ -174,27 +199,31 @@ impl VofaParser {
                         };
 
                         if is_image {
-                            let image_id =
-                                i32::from_le_bytes(self.buffer[0..4].try_into().unwrap_or([0; 4]))
-                                    as usize;
-                            let image_size =
-                                i32::from_le_bytes(self.buffer[4..8].try_into().unwrap_or([0; 4]))
-                                    as usize;
-                            let image_width =
-                                i32::from_le_bytes(self.buffer[8..12].try_into().unwrap_or([0; 4]))
-                                    as usize;
+                            let image_id = i32::from_le_bytes(
+                                self.buffer[pos - 20..pos - 16].try_into().unwrap_or([0; 4]),
+                            ) as usize;
+                            let image_size = i32::from_le_bytes(
+                                self.buffer[pos - 16..pos - 12].try_into().unwrap_or([0; 4]),
+                            ) as usize;
+                            let image_width = i32::from_le_bytes(
+                                self.buffer[pos - 12..pos - 8].try_into().unwrap_or([0; 4]),
+                            ) as usize;
                             let image_height = i32::from_le_bytes(
-                                self.buffer[12..16].try_into().unwrap_or([0; 4]),
+                                self.buffer[pos - 8..pos - 4].try_into().unwrap_or([0; 4]),
                             ) as usize;
                             let image_format = i32::from_le_bytes(
-                                self.buffer[16..20].try_into().unwrap_or([0; 4]),
+                                self.buffer[pos - 4..pos].try_into().unwrap_or([0; 4]),
                             ) as u8;
 
                             if self.buffer.len() < pos + 8 + image_size {
                                 break; // Wait for full image payload
                             }
 
-                            self.buffer.drain(..pos + 8);
+                            // Drain any trash/misaligned bytes before the image header.
+                            self.buffer.drain(..pos - 20);
+                            // Drain the 28-byte header.
+                            self.buffer.drain(..28);
+                            // Drain the image data.
                             let image_data = self.buffer.drain(..image_size).collect::<Vec<u8>>();
                             self.latest_image = Some(VofaImage {
                                 id: image_id,
@@ -204,51 +233,56 @@ impl VofaParser {
                                 data: image_data,
                             });
                         } else {
+                            // Process normal float frame
                             let frame_bytes = self.buffer.drain(..pos + 4).collect::<Vec<u8>>();
-                            let val_bytes = &frame_bytes[..frame_bytes.len() - 4];
-                            let mut vals = Vec::new();
-                            for chunk in val_bytes.chunks_exact(4) {
-                                let val = f32::from_le_bytes(chunk.try_into().unwrap());
-                                vals.push(val);
-                            }
-                            if !vals.is_empty() {
-                                frames.push(vals);
+                            if pos % 4 == 0 {
+                                let val_bytes = &frame_bytes[..pos];
+                                if self.mode == VofaMode::JustFloat {
+                                    let mut vals = Vec::new();
+                                    for chunk in val_bytes.chunks_exact(4) {
+                                        let val = f32::from_le_bytes(chunk.try_into().unwrap());
+                                        vals.push(val);
+                                    }
+                                    if !vals.is_empty() {
+                                        frames.push(vals);
+                                    }
+                                } else {
+                                    // IndexFloat
+                                    if val_bytes.len() >= 4 {
+                                        let start_index_val =
+                                            f32::from_le_bytes(val_bytes[0..4].try_into().unwrap());
+                                        let start_index = start_index_val as usize;
+                                        let data_bytes = &val_bytes[4..];
+                                        let data_count = data_bytes.len() / 4;
+                                        // Guard against massive index inputs to prevent OOM
+                                        if start_index + data_count < 2000 {
+                                            if self.index_float_buffer.len()
+                                                < start_index + data_count
+                                            {
+                                                self.index_float_buffer
+                                                    .resize(start_index + data_count, 0.0);
+                                            }
+                                            for (idx, chunk) in
+                                                data_bytes.chunks_exact(4).enumerate()
+                                            {
+                                                let val =
+                                                    f32::from_le_bytes(chunk.try_into().unwrap());
+                                                self.index_float_buffer[start_index + idx] = val;
+                                            }
+                                            frames.push(self.index_float_buffer.clone());
+                                        }
+                                    }
+                                }
                             }
                         }
                     } else {
                         break;
                     }
                 }
-                VofaMode::IndexFloat => {
-                    // IndexFloat is binary floats ending with NaN: [0x00, 0x00, 0x80, 0x7F]
-                    let tail = [0x00, 0x00, 0x80, 0x7F];
-                    if let Some(pos) = self.buffer.windows(4).position(|w| w == tail) {
-                        let frame_bytes = self.buffer.drain(..pos + 4).collect::<Vec<u8>>();
-                        if frame_bytes.len() >= 8 && frame_bytes.len() % 4 == 0 {
-                            let val_bytes = &frame_bytes[..frame_bytes.len() - 4];
-
-                            let start_index_val =
-                                f32::from_le_bytes(val_bytes[0..4].try_into().unwrap());
-                            let start_index = start_index_val as usize;
-
-                            let data_bytes = &val_bytes[4..];
-                            let data_count = data_bytes.len() / 4;
-
-                            if self.index_float_buffer.len() < start_index + data_count {
-                                self.index_float_buffer
-                                    .resize(start_index + data_count, 0.0);
-                            }
-
-                            for (idx, chunk) in data_bytes.chunks_exact(4).enumerate() {
-                                let val = f32::from_le_bytes(chunk.try_into().unwrap());
-                                self.index_float_buffer[start_index + idx] = val;
-                            }
-
-                            frames.push(self.index_float_buffer.clone());
-                        }
-                    } else {
-                        break;
-                    }
+                VofaMode::RawData => {
+                    // Consume/discard buffer for waveform parsing
+                    self.buffer.clear();
+                    break;
                 }
             }
         }
@@ -347,5 +381,56 @@ mod tests {
         assert_eq!(img.height, 3);
         assert_eq!(img.format, 24);
         assert_eq!(img.data, b"abcdef");
+    }
+
+    #[test]
+    fn test_indexfloat_image_parser() {
+        let mut parser = VofaParser::new(VofaMode::IndexFloat);
+
+        // IndexFloat should support image parsing identically to JustFloat
+        let img_id: i32 = 2;
+        let img_size: i32 = 4;
+        let img_width: i32 = 2;
+        let img_height: i32 = 2;
+        let img_format: i32 = 24;
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&img_id.to_le_bytes());
+        buf.extend_from_slice(&img_size.to_le_bytes());
+        buf.extend_from_slice(&img_width.to_le_bytes());
+        buf.extend_from_slice(&img_height.to_le_bytes());
+        buf.extend_from_slice(&img_format.to_le_bytes());
+        buf.extend_from_slice(&[0x00, 0x00, 0x80, 0x7F]); // First NaN
+        buf.extend_from_slice(&[0x00, 0x00, 0x80, 0x7F]); // Second NaN
+        buf.extend_from_slice(b"test");
+
+        let res = parser.feed(&buf);
+        assert!(res.is_empty());
+        let img = parser
+            .take_latest_image()
+            .expect("Should parse image in IndexFloat mode");
+        assert_eq!(img.id, 2);
+        assert_eq!(img.data, b"test");
+    }
+
+    #[test]
+    fn test_justfloat_resync_trash() {
+        let mut parser = VofaParser::new(VofaMode::JustFloat);
+        // Send 2 trash bytes, then a valid float frame (1.0f32 + NaN)
+        let mut buf = vec![0x11, 0x22];
+        buf.extend_from_slice(&1.0f32.to_le_bytes());
+        buf.extend_from_slice(&[0x00, 0x00, 0x80, 0x7F]);
+
+        let res = parser.feed(&buf);
+        // Since it had 2 trash bytes, the frame is misaligned (pos = 6, 6 % 4 != 0)
+        // It should be drained and discarded (no frame added)
+        assert!(res.is_empty());
+
+        // Send a properly aligned frame next
+        let mut buf2 = Vec::new();
+        buf2.extend_from_slice(&2.5f32.to_le_bytes());
+        buf2.extend_from_slice(&[0x00, 0x00, 0x80, 0x7F]);
+        let res2 = parser.feed(&buf2);
+        assert_eq!(res2, vec![vec![2.5]]);
     }
 }

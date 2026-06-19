@@ -3,7 +3,8 @@ use crate::config::{
 };
 use crate::worker::{self, WorkerMessage};
 use ratatui::layout::Rect;
-use std::io::Read;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -41,9 +42,11 @@ pub struct LayoutZones {
     pub flash_empty_state: Rect,
     pub flash_mode_toggle: Rect,
     pub flash_donotchg_toggle: Rect,
+    pub flash_manifest_status: Rect,
     pub custom_baud_modal: Rect,
     pub auto_reply_modal: Rect,
     pub flash_manifest_table: Rect,
+    pub manifest_delete_modal: Rect,
     pub manifest_edit_modal: Rect,
     pub file_picker_modal: Rect,
     pub file_picker_table: Rect,
@@ -223,6 +226,7 @@ pub struct App {
     pub channels: Vec<Channel>,
     pub stats: Stats,
     pub logs: Vec<String>,
+    pub log_file: Option<File>,
     pub config: ProjectConfig,
     pub config_path: String,
     pub tool_config: ToolConfig,
@@ -233,6 +237,7 @@ pub struct App {
     pub auto_flash: bool,
     pub use_merged_flash: bool,
     pub flash_batch_mode: bool,
+    pub manifest_locked: bool,
     pub show_custom_baud_modal: bool,
     pub custom_baud_input: String,
     pub show_auto_reply_modal: bool,
@@ -240,7 +245,9 @@ pub struct App {
     pub auto_reply_response_input: String,
     pub auto_reply_focused_field: usize,
     pub show_manifest_edit_modal: bool,
+    pub show_manifest_delete_confirm: bool,
     pub manifest_edit_image_label: String,
+    pub manifest_delete_image_label: String,
     pub manifest_edit_is_offset: bool,
     pub manifest_edit_input: String,
     pub show_file_picker: bool,
@@ -381,11 +388,8 @@ impl App {
         };
         let mut active_config_path = config_path.clone();
         let load_user_or_default = || {
-            let config = ProjectConfig::load_from_file(&user_config_path).unwrap_or_else(|_| {
-                let default_cfg = ProjectConfig::default();
-                let _ = default_cfg.save_to_file(&user_config_path);
-                default_cfg
-            });
+            let config = ProjectConfig::load_from_file(&user_config_path)
+                .unwrap_or_else(|_| ProjectConfig::default());
             (config, user_config_path.to_string_lossy().to_string())
         };
         let mut config = if let Some(pio_ini) = external_platformio_ini {
@@ -445,7 +449,7 @@ impl App {
                     active_config_path = user_cfg_path;
                     user_cfg
                 });
-            if manifest_has_errors(&loaded) {
+            if manifest_has_errors(&loaded) || manifest_needs_platformio_refresh(&loaded) {
                 if let Some(factory_cfg) = create_factory_manifest_from_existing_artifacts(
                     Some(&loaded),
                     factory_dir,
@@ -550,12 +554,14 @@ impl App {
                 || img.label == "factory_merged"
                 || img.path.ends_with("merged.bin")
         });
-        let use_merged_flash = has_merged && !has_segmented;
+        let use_merged_flash = has_merged && (config.use_merged_flash || !has_segmented);
+        let manifest_locked = config.manifest_locked;
 
         let waveform_history = std::collections::HashMap::new();
 
         let tool_config = ToolConfig::load();
         let tool_settings_selected = if tool_config.language == "zh" { 1 } else { 0 };
+        let (log_file, log_file_path, log_init_error) = open_session_log_file();
 
         let mut app = Self {
             channels: Vec::new(),
@@ -565,6 +571,7 @@ impl App {
                 total_attempted: 0,
             },
             logs: Vec::new(),
+            log_file,
             config,
             config_path: active_config_path,
             tool_config,
@@ -579,7 +586,9 @@ impl App {
             auto_reply_response_input: String::new(),
             auto_reply_focused_field: 0,
             show_manifest_edit_modal: false,
+            show_manifest_delete_confirm: false,
             manifest_edit_image_label: String::new(),
+            manifest_delete_image_label: String::new(),
             manifest_edit_is_offset: false,
             manifest_edit_input: String::new(),
             show_file_picker: false,
@@ -685,6 +694,7 @@ impl App {
             auto_flash: false,
             use_merged_flash,
             flash_batch_mode: true,
+            manifest_locked,
         };
 
         crate::vofa::ACTIVE_VOFA_MODE
@@ -700,15 +710,36 @@ impl App {
         if let Some(notice) = pio_package_notice {
             app.log(notice);
         }
+        if let Some(path) = log_file_path {
+            app.log(format!("Session log file: {}", path.display()));
+        }
+        if let Some(err) = log_init_error {
+            app.log(format!("Session log file unavailable: {}", err));
+        }
         app
     }
 
     pub fn log(&mut self, msg: impl Into<String>) {
         let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
-        self.logs.push(format!("[{}] {}", timestamp, msg.into()));
+        let line = format!("[{}] {}", timestamp, msg.into());
+        self.write_session_log_line(&line);
+        self.logs.push(line);
         // Keep logs size reasonable
         if self.logs.len() > 100 {
             self.logs.remove(0);
+        }
+    }
+
+    fn log_file_event(&mut self, msg: impl Into<String>) {
+        let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+        let line = format!("[{}] {}", timestamp, msg.into());
+        self.write_session_log_line(&line);
+    }
+
+    fn write_session_log_line(&mut self, line: &str) {
+        if let Some(file) = self.log_file.as_mut() {
+            let _ = writeln!(file, "{}", line);
+            let _ = file.flush();
         }
     }
 
@@ -768,6 +799,12 @@ impl App {
     }
 
     pub fn toggle_merged_flash(&mut self) {
+        if self.manifest_locked {
+            self.log(
+                "Firmware manifest is locked; click the status bar to unlock before changing flash mode.",
+            );
+            return;
+        }
         self.use_merged_flash = !self.use_merged_flash;
         self.config.use_merged_flash = self.use_merged_flash;
         let _ = self.config.save_to_file(&self.config_path);
@@ -782,6 +819,12 @@ impl App {
     }
 
     pub fn toggle_do_not_chg_bin(&mut self) {
+        if self.manifest_locked {
+            self.log(
+                "Firmware manifest is locked; click the status bar to unlock before changing DoNotChgBin.",
+            );
+            return;
+        }
         self.config.do_not_chg_bin = !self.config.do_not_chg_bin;
         let _ = self.config.save_to_file(&self.config_path);
         self.log(format!(
@@ -850,11 +893,11 @@ impl App {
                 || img.label == "factory_merged"
                 || img.path.ends_with("merged.bin")
         });
-        self.use_merged_flash = has_merged && !has_segmented;
+        self.use_merged_flash = has_merged && (self.config.use_merged_flash || !has_segmented);
         self.config.use_merged_flash = self.use_merged_flash;
     }
 
-    fn ensure_flash_manifest_ready(&mut self) -> bool {
+    pub fn ensure_flash_manifest_ready(&mut self) -> bool {
         let errors = self.current_mode_manifest_errors();
         if errors.is_empty() {
             return true;
@@ -1228,7 +1271,7 @@ impl App {
         }
 
         let selected_port = self
-            .get_selected_port()
+            .get_selected_serial_port()
             .unwrap_or_else(|| "NONE".to_string());
 
         // Stop monitors for non-selected ports
@@ -1290,7 +1333,36 @@ impl App {
         }
     }
 
+    pub fn visible_port_indices_for_active_tab(&self) -> Vec<usize> {
+        match self.active_tab {
+            ActiveTab::Serial | ActiveTab::Plotter => self
+                .channels
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, channel)| (!channel.port.starts_with("probe:")).then_some(idx))
+                .collect(),
+            _ => (0..self.channels.len()).collect(),
+        }
+    }
+
+    pub fn get_selected_serial_port(&self) -> Option<String> {
+        self.channels
+            .get(self.selected_channel_idx)
+            .filter(|channel| !channel.port.starts_with("probe:"))
+            .or_else(|| {
+                self.channels
+                    .iter()
+                    .find(|channel| !channel.port.starts_with("probe:"))
+            })
+            .map(|channel| channel.port.clone())
+    }
+
     pub fn toggle_serial_monitor(&mut self) {
+        if !self.serial_monitor_enabled && self.get_selected_serial_port().is_none() {
+            self.log("Serial monitor not started: no serial port is available.");
+            self.show_serial_notice("No serial port available", SerialNoticeKind::Warning);
+            return;
+        }
         self.serial_monitor_enabled = !self.serial_monitor_enabled;
         if self.serial_monitor_enabled {
             self.log("Serial monitor resumed.");
@@ -1325,13 +1397,20 @@ impl App {
                 progress,
                 speed,
             } => {
+                let status_for_log = status.clone();
+                let speed_for_log = speed.clone();
                 if let Some(channel) = self.channels.iter_mut().find(|c| c.port == port) {
                     channel.status = status;
                     channel.progress = progress;
                     channel.speed = speed;
                 }
+                self.log_file_event(format!(
+                    "[{}] STATUS status='{}' progress={} speed='{}'",
+                    port, status_for_log, progress, speed_for_log
+                ));
             }
             WorkerMessage::MacAddressDetected { port, mac, chip } => {
+                self.log_file_event(format!("[{}] DETECTED chip='{}' mac='{}'", port, chip, mac));
                 if let Some(channel) = self.channels.iter_mut().find(|c| c.port == port) {
                     channel.mac = Some(mac);
                     channel.chip = Some(chip);
@@ -1342,12 +1421,17 @@ impl App {
                 serial_number,
                 device_name,
             } => {
+                self.log_file_event(format!(
+                    "[{}] PROVISION serial='{}' device='{}'",
+                    port, serial_number, device_name
+                ));
                 if let Some(channel) = self.channels.iter_mut().find(|c| c.port == port) {
                     channel.serial_number = Some(serial_number);
                     channel.device_name = Some(device_name);
                 }
             }
             WorkerMessage::ProductionStep { port, step, detail } => {
+                self.log_file_event(format!("[{}] STEP {}='{}'", port, step, detail));
                 if let Some(channel) = self.channels.iter_mut().find(|c| c.port == port) {
                     match step.as_str() {
                         "planned_bytes" => {
@@ -1433,6 +1517,13 @@ impl App {
                 error_msg,
                 mac,
             } => {
+                self.log_file_event(format!(
+                    "[{}] FINISHED result={} mac='{}' error='{}'",
+                    port,
+                    if success { "OK" } else { "FAIL" },
+                    mac.as_deref().unwrap_or("-"),
+                    error_msg.as_deref().unwrap_or("")
+                ));
                 self.serial_tx_senders.remove(&port);
                 self.serial_monitor_baud_rates.remove(&port);
                 self.serial_pending_monitors.remove(&port);
@@ -1541,7 +1632,7 @@ impl App {
                 ));
 
                 // If it was monitoring, restart monitoring at the new baud rate
-                if let Some(active_port) = self.get_selected_port() {
+                if let Some(active_port) = self.get_selected_serial_port() {
                     if active_port == port {
                         let had_monitor = self.serial_tx_senders.remove(&port).is_some()
                             || self.serial_monitor_baud_rates.remove(&port).is_some()
@@ -1692,7 +1783,7 @@ impl App {
         self.serial_playback_cursor = 0;
         self.serial_parse_summary = SerialParseSummary::default();
         self.serial_replay_parser = crate::vofa::VofaParser::new(self.vofa_mode);
-        if let Some(port) = self.get_selected_port() {
+        if let Some(port) = self.get_selected_serial_port() {
             self.waveform_history.remove(&port);
         }
         self.log(format!(
@@ -1783,7 +1874,7 @@ impl App {
     }
 
     fn selected_waveform_len(&self) -> usize {
-        self.get_selected_port()
+        self.get_selected_serial_port()
             .as_ref()
             .and_then(|port| self.waveform_history.get(port))
             .map(Vec::len)
@@ -1844,7 +1935,7 @@ impl App {
     #[allow(dead_code)]
     pub fn cycle_serial_baud_rate(&mut self) {
         self.serial_baud_rate = next_serial_baud_rate(self.serial_baud_rate);
-        if let Some(port) = self.get_selected_port() {
+        if let Some(port) = self.get_selected_serial_port() {
             let had_monitor = self.serial_tx_senders.remove(&port).is_some()
                 || self.serial_monitor_baud_rates.remove(&port).is_some()
                 || self.serial_pending_monitors.remove(&port).is_some();
@@ -1869,7 +1960,7 @@ impl App {
             _ => "8-N-1",
         };
         self.serial_frame_format = next.to_string();
-        if let Some(port) = self.get_selected_port() {
+        if let Some(port) = self.get_selected_serial_port() {
             let had_monitor = self.serial_tx_senders.remove(&port).is_some()
                 || self.serial_monitor_baud_rates.remove(&port).is_some()
                 || self.serial_pending_monitors.remove(&port).is_some();
@@ -1893,7 +1984,7 @@ impl App {
         }
 
         let port = self
-            .get_selected_port()
+            .get_selected_serial_port()
             .unwrap_or_else(|| "NONE".to_string());
         match encode_serial_tx(trimmed, self.serial_hex_mode_tx, self.serial_add_newline) {
             Ok(bytes) => {
@@ -1934,7 +2025,8 @@ impl App {
         self.vofa_mode = match self.vofa_mode {
             crate::vofa::VofaMode::FireWater => crate::vofa::VofaMode::JustFloat,
             crate::vofa::VofaMode::JustFloat => crate::vofa::VofaMode::IndexFloat,
-            crate::vofa::VofaMode::IndexFloat => crate::vofa::VofaMode::FireWater,
+            crate::vofa::VofaMode::IndexFloat => crate::vofa::VofaMode::RawData,
+            crate::vofa::VofaMode::RawData => crate::vofa::VofaMode::FireWater,
         };
         crate::vofa::ACTIVE_VOFA_MODE
             .store(self.vofa_mode.to_u8(), std::sync::atomic::Ordering::Relaxed);
@@ -1950,7 +2042,7 @@ impl App {
         use unicode_width::UnicodeWidthStr;
         let lang = &self.tool_config.language;
         let selected_port = self
-            .get_selected_port()
+            .get_selected_serial_port()
             .unwrap_or_else(|| "NONE".to_string());
         let protocol = format!("{:?}", self.vofa_mode);
         let view = format!("{:?}", self.plotter_mode);
@@ -2120,6 +2212,33 @@ impl App {
         row: u16,
         _tx: tokio::sync::mpsc::Sender<WorkerMessage>,
     ) -> bool {
+        if self.active_tab == ActiveTab::Flasher
+            && self.is_inside_rect(col, row, self.layout_zones.flash_manifest_table)
+        {
+            if self.manifest_locked {
+                self.log(
+                    "Firmware manifest is locked; click the status bar to unlock before deleting.",
+                );
+                return true;
+            }
+
+            let rect = self.layout_zones.flash_manifest_table;
+            let relative_row = row.saturating_sub(rect.y + 1) as usize;
+            let filtered_results = self.config.manifest_results_for_mode(self.use_merged_flash);
+            if let Some(res) = filtered_results.get(relative_row) {
+                if res.path.trim().is_empty() && res.offset.trim().is_empty() {
+                    return true;
+                }
+                self.show_manifest_delete_confirm = true;
+                self.manifest_delete_image_label = res.label.clone();
+                self.log(format!(
+                    "Delete confirmation opened for manifest image '{}'.",
+                    res.label
+                ));
+            }
+            return true;
+        }
+
         if self.active_tab == ActiveTab::Serial {
             if self.is_inside_rect(col, row, self.layout_zones.serial_port_info) {
                 let idx = row.saturating_sub(self.layout_zones.serial_port_info.y + 1) as usize;
@@ -2144,9 +2263,9 @@ impl App {
             } else {
                 let relative_row =
                     row.saturating_sub(self.layout_zones.port_menu_modal.y + 1) as usize;
-                let total_items = self.channels.len();
-                if relative_row < total_items {
-                    self.selected_channel_idx = relative_row;
+                let visible_indices = self.visible_port_indices_for_active_tab();
+                if let Some(channel_idx) = visible_indices.get(relative_row).copied() {
+                    self.selected_channel_idx = channel_idx;
                     if let Some(port) = self.get_selected_port() {
                         self.log(format!("Selected port switched to {}.", port));
                     }
@@ -2253,6 +2372,14 @@ impl App {
             return true; // Consume click
         }
 
+        if self.show_manifest_delete_confirm {
+            if !self.is_inside_rect(col, row, self.layout_zones.manifest_delete_modal) {
+                self.show_manifest_delete_confirm = false;
+                self.manifest_delete_image_label.clear();
+            }
+            return true;
+        }
+
         // Manifest Edit Modal Check
         if self.show_manifest_edit_modal {
             if !self.is_inside_rect(col, row, self.layout_zones.manifest_edit_modal) {
@@ -2323,11 +2450,27 @@ impl App {
 
         if self.active_tab == ActiveTab::Flasher {
             if self.is_inside_rect(col, row, self.layout_zones.flash_mode_toggle) {
+                if self.manifest_locked {
+                    self.log(
+                        "Firmware manifest is locked; click the status bar to unlock before changing flash mode.",
+                    );
+                    return true;
+                }
                 self.toggle_merged_flash();
                 return true;
             }
             if self.is_inside_rect(col, row, self.layout_zones.flash_donotchg_toggle) {
+                if self.manifest_locked {
+                    self.log(
+                        "Firmware manifest is locked; click the status bar to unlock before changing DoNotChgBin.",
+                    );
+                    return true;
+                }
                 self.toggle_do_not_chg_bin();
+                return true;
+            }
+            if self.is_inside_rect(col, row, self.layout_zones.flash_manifest_status) {
+                self.toggle_manifest_lock();
                 return true;
             }
 
@@ -2398,22 +2541,20 @@ impl App {
             }
 
             if self.is_inside_rect(col, row, self.layout_zones.flash_manifest_table) {
+                if self.manifest_locked {
+                    self.log(
+                        "Firmware manifest is locked; click the status bar to unlock before editing.",
+                    );
+                    return true;
+                }
+
                 let rect = self.layout_zones.flash_manifest_table;
                 let relative_row = row.saturating_sub(rect.y + 1) as usize;
 
-                let (image_results, _) = self.config.validate_manifest();
-                let filtered_results: Vec<&crate::config::ImageValidationResult> = image_results
-                    .iter()
-                    .filter(|res| {
-                        let is_merged = res.label.contains("merged")
-                            || res.path.ends_with("factory_merged.bin")
-                            || res.path.ends_with("merged.bin");
-                        self.use_merged_flash == is_merged
-                    })
-                    .collect();
+                let filtered_results = self.config.manifest_results_for_mode(self.use_merged_flash);
 
                 if relative_row < filtered_results.len() {
-                    let res = filtered_results[relative_row];
+                    let res = &filtered_results[relative_row];
                     let relative_col = col.saturating_sub(rect.x);
 
                     if relative_col < 11 {
@@ -2482,12 +2623,9 @@ impl App {
             && self.is_inside_rect(col, row, self.layout_zones.plotter_port_selector)
         {
             let relative_row = row.saturating_sub(self.layout_zones.plotter_port_selector.y + 1);
-            let port_count = self.channels.len();
-            if relative_row < port_count as u16 {
-                let idx = relative_row as usize;
-                if idx < self.channels.len() {
-                    self.selected_channel_idx = idx;
-                }
+            let visible_indices = self.visible_port_indices_for_active_tab();
+            if let Some(idx) = visible_indices.get(relative_row as usize).copied() {
+                self.selected_channel_idx = idx;
             }
             return true;
         }
@@ -2992,7 +3130,7 @@ impl App {
             }
         ));
         let port = self
-            .get_selected_port()
+            .get_selected_serial_port()
             .unwrap_or_else(|| "NONE".to_string());
         if let Some(sender) = self.serial_tx_senders.get(&port).cloned() {
             let _ = sender.send(crate::worker::MonitorCommand::SetDtr(
@@ -3012,7 +3150,7 @@ impl App {
             }
         ));
         let port = self
-            .get_selected_port()
+            .get_selected_serial_port()
             .unwrap_or_else(|| "NONE".to_string());
         if let Some(sender) = self.serial_tx_senders.get(&port).cloned() {
             let _ = sender.send(crate::worker::MonitorCommand::SetRts(
@@ -3024,7 +3162,7 @@ impl App {
     pub fn apply_custom_baud_rate(&mut self) {
         if let Ok(parsed_baud) = self.custom_baud_input.trim().parse::<u32>() {
             self.serial_baud_rate = parsed_baud;
-            if let Some(port) = self.get_selected_port() {
+            if let Some(port) = self.get_selected_serial_port() {
                 let had_monitor = self.serial_tx_senders.remove(&port).is_some()
                     || self.serial_monitor_baud_rates.remove(&port).is_some()
                     || self.serial_pending_monitors.remove(&port).is_some();
@@ -3042,25 +3180,76 @@ impl App {
         }
     }
 
+    pub fn toggle_manifest_lock(&mut self) {
+        self.manifest_locked = !self.manifest_locked;
+        self.config.manifest_locked = self.manifest_locked;
+        let _ = self.config.save_to_file(&self.config_path);
+        if self.manifest_locked {
+            self.show_manifest_edit_modal = false;
+            self.show_file_picker = false;
+            self.show_manifest_delete_confirm = false;
+            self.manifest_delete_image_label.clear();
+            self.log("Firmware manifest locked.");
+        } else {
+            self.log("Firmware manifest unlocked.");
+        }
+    }
+
+    pub fn confirm_manifest_delete(&mut self) {
+        if self.manifest_locked {
+            self.log("Firmware manifest is locked; unlock before deleting.");
+            self.show_manifest_delete_confirm = false;
+            self.manifest_delete_image_label.clear();
+            return;
+        }
+
+        let label = self.manifest_delete_image_label.clone();
+        if label.trim().is_empty() {
+            self.show_manifest_delete_confirm = false;
+            return;
+        }
+
+        if self.config.clear_manifest_image(&label) {
+            self.config.sync_images_to_flat_fields();
+            let _ = self.config.save_to_file(&self.config_path);
+            self.log(format!("Deleted manifest image '{}'.", label));
+        }
+
+        self.show_manifest_delete_confirm = false;
+        self.manifest_delete_image_label.clear();
+    }
+
     pub fn save_manifest_edit(&mut self) {
+        if self.manifest_locked {
+            self.log("Firmware manifest is locked; unlock before saving changes.");
+            self.show_manifest_edit_modal = false;
+            return;
+        }
+
         let label = self.manifest_edit_image_label.clone();
         let value = self.manifest_edit_input.trim().to_string();
         let is_offset = self.manifest_edit_is_offset;
 
-        if let Some(img) = self.config.images.iter_mut().find(|i| i.label == label) {
+        {
+            let img = self.config.ensure_manifest_image(&label);
             if is_offset {
                 img.offset = value.clone();
-                self.log(format!(
-                    "Updated manifest offset for '{}' to {}",
-                    label, value
-                ));
             } else {
                 img.path = value.clone();
-                self.log(format!(
-                    "Updated manifest path for '{}' to {}",
-                    label, value
-                ));
             }
+            img.required = !img.path.trim().is_empty();
+        }
+
+        if is_offset {
+            self.log(format!(
+                "Updated manifest offset for '{}' to {}",
+                label, value
+            ));
+        } else {
+            self.log(format!(
+                "Updated manifest path for '{}' to {}",
+                label, value
+            ));
         }
 
         self.config.sync_images_to_flat_fields();
@@ -3152,6 +3341,12 @@ impl App {
     }
 
     pub fn select_file_picker_item(&mut self) {
+        if self.manifest_locked {
+            self.log("Firmware manifest is locked; unlock before selecting files.");
+            self.show_file_picker = false;
+            return;
+        }
+
         if self.file_picker_selected_idx >= self.file_picker_items.len() {
             return;
         }
@@ -3167,13 +3362,15 @@ impl App {
             let label = self.file_picker_image_label.clone();
             let value = item.path.to_string_lossy().to_string();
 
-            if let Some(img) = self.config.images.iter_mut().find(|i| i.label == label) {
+            {
+                let img = self.config.ensure_manifest_image(&label);
                 img.path = value.clone();
-                self.log(format!(
-                    "Updated manifest path for '{}' to {}",
-                    label, value
-                ));
+                img.required = !img.path.trim().is_empty();
             }
+            self.log(format!(
+                "Updated manifest path for '{}' to {}",
+                label, value
+            ));
 
             self.config.sync_images_to_flat_fields();
             let _ = self.config.save_to_file(&self.config_path);
@@ -3193,7 +3390,7 @@ impl App {
     }
 
     pub fn start_auto_baud_detection(&mut self) {
-        let port = if let Some(p) = self.get_selected_port() {
+        let port = if let Some(p) = self.get_selected_serial_port() {
             p
         } else {
             self.log("No serial port selected for auto-baud detection.");
@@ -3332,8 +3529,64 @@ fn make_trace_id(port: &str, attempt: u32) -> String {
     format!("TRACE-{}-{:06}", sanitized_port, attempt)
 }
 
+fn open_session_log_file() -> (Option<File>, Option<std::path::PathBuf>, Option<String>) {
+    let traces_dir = std::path::PathBuf::from(".piopulse").join("runs");
+    if let Err(e) = std::fs::create_dir_all(&traces_dir) {
+        return (
+            None,
+            None,
+            Some(format!("failed to create {}: {}", traces_dir.display(), e)),
+        );
+    }
+
+    let filename = format!(
+        "piopulse-{}.txt",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    );
+    let path = traces_dir.join(filename);
+    match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut file) => {
+            let _ = writeln!(
+                file,
+                "PioPulse session started at {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            );
+            let _ = writeln!(
+                file,
+                "cwd={}",
+                std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "?".to_string())
+            );
+            let _ = writeln!(file, "version={}", env!("CARGO_PKG_VERSION"));
+            let _ = writeln!(file, "---");
+            (Some(file), Some(path), None)
+        }
+        Err(e) => (
+            None,
+            Some(path.clone()),
+            Some(format!("failed to open {}: {}", path.display(), e)),
+        ),
+    }
+}
+
 fn manifest_has_errors(config: &ProjectConfig) -> bool {
     !config.validate_manifest().1.is_empty()
+}
+
+fn manifest_needs_platformio_refresh(config: &ProjectConfig) -> bool {
+    std::path::Path::new("platformio.ini").exists()
+        && (config.chip_type == "Auto" || manifest_has_empty_required_image(config))
+}
+
+fn manifest_has_empty_required_image(config: &ProjectConfig) -> bool {
+    config.images.iter().any(|img| {
+        img.required
+            && !img.path.trim().is_empty()
+            && std::fs::metadata(&img.path)
+                .map(|metadata| metadata.len() == 0)
+                .unwrap_or(false)
+    })
 }
 
 fn create_factory_manifest_from_existing_artifacts(
@@ -3421,7 +3674,7 @@ fn create_factory_manifest_from_existing_artifacts(
         });
     }
 
-    config.use_merged_flash = has_merged && !has_segmented;
+    config.use_merged_flash = has_merged;
     config.save_to_file(manifest_path).ok()?;
     ProjectConfig::load_from_file(manifest_path).ok()
 }
@@ -3895,6 +4148,13 @@ mod tests {
         let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Serial;
+        app.channels = vec![Channel::new(crate::worker::DetectedPort {
+            name: "COM3".to_string(),
+            vid: None,
+            pid: None,
+            product: Some("USB Serial".to_string()),
+            manufacturer: None,
+        })];
         app.layout_zones.serial_options = ratatui::layout::Rect::new(30, 5, 24, 8);
 
         assert!(!app.serial_monitor_enabled);
@@ -4130,6 +4390,99 @@ mod tests {
         assert_eq!(app.config.bootloader_path, "new_boot.bin"); // flat field synchronized!
 
         let _ = std::fs::remove_file("test_piopulse.toml");
+    }
+
+    #[test]
+    fn test_manifest_right_click_confirms_before_delete() {
+        let mut app = App::new("test_piopulse.toml".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        app.active_tab = ActiveTab::Flasher;
+        app.config.images = vec![crate::config::FirmwareImage {
+            label: "bootloader".to_string(),
+            path: "test_boot.bin".to_string(),
+            offset: "0x1000".to_string(),
+            required: true,
+            encrypted: false,
+            sha256: Some("abc".to_string()),
+        }];
+        app.config.sync_images_to_flat_fields();
+        app.layout_zones.flash_manifest_table = ratatui::layout::Rect::new(50, 5, 50, 10);
+
+        assert!(app.handle_mouse_right_click(52, 6, tx));
+        assert!(app.show_manifest_delete_confirm);
+        assert_eq!(app.manifest_delete_image_label, "bootloader");
+        assert_eq!(app.config.images[0].path, "test_boot.bin");
+
+        app.confirm_manifest_delete();
+        assert!(!app.show_manifest_delete_confirm);
+        assert_eq!(app.config.images[0].path, "");
+        assert_eq!(app.config.images[0].offset, "");
+        assert!(!app.config.images[0].required);
+        assert!(app.config.images[0].sha256.is_none());
+        assert_eq!(app.config.bootloader_path, "");
+
+        let _ = std::fs::remove_file("test_piopulse.toml");
+    }
+
+    #[test]
+    fn test_manifest_lock_blocks_edit_delete_and_mode_changes() {
+        let mut app = App::new("test_piopulse.toml".to_string());
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        app.active_tab = ActiveTab::Flasher;
+        app.config.images = vec![crate::config::FirmwareImage {
+            label: "bootloader".to_string(),
+            path: "test_boot.bin".to_string(),
+            offset: "0x1000".to_string(),
+            required: true,
+            encrypted: false,
+            sha256: None,
+        }];
+        app.layout_zones.flash_manifest_table = ratatui::layout::Rect::new(50, 5, 50, 10);
+        app.layout_zones.flash_manifest_status = ratatui::layout::Rect::new(50, 16, 50, 3);
+        app.layout_zones.flash_mode_toggle = ratatui::layout::Rect::new(10, 5, 60, 1);
+
+        assert!(app.handle_mouse_click(52, 16, tx.clone()));
+        assert!(app.manifest_locked);
+
+        assert!(app.handle_mouse_click(52, 6, tx.clone()));
+        assert!(!app.show_manifest_edit_modal);
+
+        assert!(app.handle_mouse_right_click(52, 6, tx.clone()));
+        assert!(!app.show_manifest_delete_confirm);
+
+        let initial_mode = app.use_merged_flash;
+        assert!(app.handle_mouse_click(12, 5, tx.clone()));
+        assert_eq!(app.use_merged_flash, initial_mode);
+
+        assert!(app.handle_mouse_click(52, 16, tx));
+        assert!(!app.manifest_locked);
+
+        let _ = std::fs::remove_file("test_piopulse.toml");
+    }
+
+    #[test]
+    fn test_manifest_lock_persists_to_project_config() {
+        let config_path = std::env::temp_dir().join(format!(
+            "piopulse_manifest_lock_{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut config = ProjectConfig::default();
+        config.manifest_locked = false;
+        config.save_to_file(&config_path).unwrap();
+
+        let mut app = App::new(config_path.to_string_lossy().to_string());
+        assert!(!app.manifest_locked);
+
+        app.toggle_manifest_lock();
+        assert!(app.manifest_locked);
+
+        let loaded = ProjectConfig::load_from_file(&config_path).unwrap();
+        assert!(loaded.manifest_locked);
+
+        let _ = std::fs::remove_file(config_path);
     }
 
     #[test]

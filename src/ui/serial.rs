@@ -41,7 +41,7 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     let active_port = app
-        .get_selected_port()
+        .get_selected_serial_port()
         .unwrap_or_else(|| "NONE".to_string());
 
     let lang = &app.tool_config.language;
@@ -284,11 +284,26 @@ fn draw_console_panel(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let constraints = if area.height < 5 {
-        [Constraint::Length(area.height), Constraint::Length(0), Constraint::Length(0), Constraint::Length(0)]
+        [
+            Constraint::Length(area.height),
+            Constraint::Length(0),
+            Constraint::Length(0),
+            Constraint::Length(0),
+        ]
     } else if area.height < 12 {
-        [Constraint::Length(5), Constraint::Length(area.height.saturating_sub(5)), Constraint::Length(0), Constraint::Length(0)]
+        [
+            Constraint::Length(5),
+            Constraint::Length(area.height.saturating_sub(5)),
+            Constraint::Length(0),
+            Constraint::Length(0),
+        ]
     } else if area.height < 18 {
-        [Constraint::Length(5), Constraint::Length(7), Constraint::Length(0), Constraint::Min(0)]
+        [
+            Constraint::Length(5),
+            Constraint::Length(7),
+            Constraint::Length(0),
+            Constraint::Min(0),
+        ]
     } else {
         [
             Constraint::Length(5), // Port, baud, and monitor state
@@ -302,14 +317,26 @@ fn draw_settings_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints(constraints)
         .split(area);
 
-    app.layout_zones.serial_port_info = if chunks[0].height >= 3 { chunks[0] } else { Rect::default() };
-    app.layout_zones.serial_options = if chunks[1].height >= 3 { chunks[1] } else { Rect::default() };
-    app.layout_zones.serial_quick_commands = if chunks[3].height >= 3 { chunks[3] } else { Rect::default() };
+    app.layout_zones.serial_port_info = if chunks[0].height >= 3 {
+        chunks[0]
+    } else {
+        Rect::default()
+    };
+    app.layout_zones.serial_options = if chunks[1].height >= 3 {
+        chunks[1]
+    } else {
+        Rect::default()
+    };
+    app.layout_zones.serial_quick_commands = if chunks[3].height >= 3 {
+        chunks[3]
+    } else {
+        Rect::default()
+    };
 
     let lang = &app.tool_config.language;
     // 1. Connection Config info
     let active_port = app
-        .get_selected_port()
+        .get_selected_serial_port()
         .unwrap_or_else(|| "NONE".to_string());
     let port_border = app
         .serial_notice
