@@ -6,14 +6,15 @@ mod vofa;
 mod worker;
 
 use app::{ActiveTab, App, PlotterMode, WidgetType};
-use config::PROJECT_CONFIG_FIELD_COUNT;
 use crossterm::{
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
         KeyModifiers,
     },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
+    },
 };
 use futures::StreamExt;
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -357,7 +358,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        SetTitle("☕PioPulse"),
+        EnterAlternateScreen,
+        EnableMouseCapture
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -417,6 +423,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create channel for worker messages
     let (tx, mut rx) = mpsc::channel(100);
     app.worker_tx = Some(tx.clone());
+
+    // Auto-build PlatformIO project if detected
+    app.trigger_startup_build(tx.clone());
 
     let mut interval = tokio::time::interval(Duration::from_millis(100));
     let mut exit = false;
@@ -566,10 +575,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     // Configuration field editing input handling
                                     match key.code {
                                         KeyCode::Enter => {
-                                            app.config.set_field(app.selected_config_field, app.edit_buffer.clone());
-                                            let _ = app.config.save_to_file(&app.config_path);
+                                            app.config.set_field(app.config_real_field_index(app.selected_config_field), app.edit_buffer.clone());
+                                            let saved = app.save_config("save config field");
                                             app.is_editing_config = false;
-                                            app.log("Config field saved.");
+                                            if saved {
+                                                app.log("Config field saved.");
+                                            }
                                         }
                                         KeyCode::Esc => {
                                             app.is_editing_config = false;
@@ -726,58 +737,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         _ => {}
                                     }
                                 } else if app.active_tab == ActiveTab::Widgets && app.is_adding_widget {
-                                    // Widgets search catalog modal input handling
-                                    let filtered_items = crate::ui::widgets::get_filtered_catalog_items(
-                                        &app.widget_search_input,
-                                        &app.tool_config.language,
-                                    );
-
-                                    match key.code {
-                                        KeyCode::Enter => {
-                                            if !filtered_items.is_empty() {
-                                                let selected_idx = app.add_menu_selected.min(filtered_items.len() - 1);
-                                                let widget_type = filtered_items[selected_idx].2;
-                                                app.add_widget(widget_type);
-                                            }
-                                            app.is_adding_widget = false;
-                                            app.widget_search_input.clear();
-                                            app.add_menu_selected = 0;
-                                        }
-                                        KeyCode::Esc => {
-                                            app.is_adding_widget = false;
-                                            app.widget_search_input.clear();
-                                            app.add_menu_selected = 0;
-                                        }
-                                        KeyCode::Up => {
-                                            if !filtered_items.is_empty() {
-                                                if app.add_menu_selected > 0 {
-                                                    app.add_menu_selected -= 1;
-                                                } else {
-                                                    app.add_menu_selected = filtered_items.len() - 1;
-                                                }
-                                            }
-                                        }
-                                        KeyCode::Down => {
-                                            if !filtered_items.is_empty() {
-                                                if app.add_menu_selected < filtered_items.len() - 1 {
-                                                    app.add_menu_selected += 1;
-                                                } else {
-                                                    app.add_menu_selected = 0;
-                                                }
-                                            }
-                                        }
-                                        KeyCode::Backspace => {
-                                            app.widget_search_input.pop();
-                                            app.add_menu_selected = 0;
-                                        }
-                                        KeyCode::Char(c) => {
-                                            app.widget_search_input.push(c);
-                                            app.add_menu_selected = 0;
-                                        }
-                                        _ => {}
-                                    }
+                                    app.is_adding_widget = false;
+                                    app.widget_search_input.clear();
+                                    app.add_menu_selected = 0;
+                                    app.log("Probe dashboard is fixed.");
                                 } else {
                                     // General navigation/operation input handling
+                                    if app.active_tab == ActiveTab::Widgets {
+                                        app.dashboard_widgets.clear();
+                                        app.selected_widget_idx = 0;
+                                        app.is_adding_widget = false;
+                                    }
                                     match key.code {
                                          KeyCode::Esc => {
                                              app.show_exit_menu = true;
@@ -797,7 +767,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         KeyCode::Char('3') => {
                                             app.active_tab = ActiveTab::Widgets;
-                                            app.log("Switched to Widgets tab.");
+                                            app.dashboard_widgets.clear();
+                                            app.is_adding_widget = false;
+                                            app.log("Switched to probe dashboard.");
                                         }
                                         KeyCode::Char('4') => {
                                             app.active_tab = ActiveTab::Flasher;
@@ -817,10 +789,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                          KeyCode::Char('a') | KeyCode::Char('A') => {
                                              if app.active_tab == ActiveTab::Widgets {
-                                                 app.is_adding_widget = true;
+                                                 app.dashboard_widgets.clear();
+                                                 app.is_adding_widget = false;
                                                  app.widget_search_input.clear();
                                                  app.add_menu_selected = 0;
-                                                 app.log("Widget catalog opened.");
+                                                 app.log("Probe dashboard is fixed.");
                                              } else if app.active_tab == ActiveTab::Flasher {
                                                  app.auto_flash = !app.auto_flash;
                                                  app.log(format!("Auto-Flash mode: {}", if app.auto_flash { "ENABLED" } else { "DISABLED" }));
@@ -834,7 +807,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                  }
                                                  app.log(format!("Auto Reply: {}", if app.serial_auto_reply_enabled { "ENABLED" } else { "DISABLED" }));
                                              } else {
-                                                 app.log("Shortcut A is available on Flasher (auto-flash), Serial (auto-reply), or Widgets (add).");
+                                                 app.log("Shortcut A is available on Flasher (auto-flash) or Serial (auto-reply).");
                                              }
                                          }
                                          KeyCode::Char('d') | KeyCode::Char('D') => {
@@ -843,7 +816,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                              } else if app.active_tab == ActiveTab::Serial {
                                                  app.toggle_dtr();
                                              } else {
-                                                 app.log("Shortcut D is available on Widgets (delete) or Serial (DTR).");
+                                                 app.log("Shortcut D is available on Serial (DTR).");
                                              }
                                          }
                                          KeyCode::Char('g') | KeyCode::Char('G') => {
@@ -917,7 +890,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.manual_tx = 0.0;
                                                 app.manual_ty = 0.0;
                                                 app.manual_tz = 0.0;
-                                                app.log("Manual override rotations & translations reset to 0.");
+                                                app.cube_zoom = 1.0;
+                                                app.log("Manual override rotations, translations & zoom reset.");
+                                            }
+                                        }
+                                        KeyCode::Char('x') | KeyCode::Char('X') => {
+                                            if app.active_tab == ActiveTab::Widgets && app.dashboard_widgets.get(app.selected_widget_idx) == Some(&WidgetType::Cube) {
+                                                app.show_cube_axes = !app.show_cube_axes;
+                                                app.log(format!("Cube Axes Visibility: {}", if app.show_cube_axes { "ON" } else { "OFF" }));
                                             }
                                         }
                                         KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -1002,11 +982,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         KeyCode::Char('+') | KeyCode::Char('=') => {
                                             if app.active_tab == ActiveTab::Plotter {
                                                 app.zoom_plotter_view(true);
+                                            } else if app.active_tab == ActiveTab::Widgets && app.dashboard_widgets.get(app.selected_widget_idx) == Some(&WidgetType::Cube) {
+                                                app.cube_zoom *= 1.2;
+                                                app.log(format!("Cube Zoom: {:.2}x", app.cube_zoom));
                                             }
                                         }
                                         KeyCode::Char('-') | KeyCode::Char('_') => {
                                             if app.active_tab == ActiveTab::Plotter {
                                                 app.zoom_plotter_view(false);
+                                            } else if app.active_tab == ActiveTab::Widgets && app.dashboard_widgets.get(app.selected_widget_idx) == Some(&WidgetType::Cube) {
+                                                app.cube_zoom /= 1.2;
+                                                app.log(format!("Cube Zoom: {:.2}x", app.cube_zoom));
                                             }
                                         }
                                         KeyCode::Char(',') | KeyCode::Char('<') => {
@@ -1136,17 +1122,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.serial_is_typing = true;
                                                 app.log("Serial typing mode opened.");
                                             } else if app.active_tab == ActiveTab::Widgets {
-                                                if app.dashboard_widgets.is_empty() {
-                                                    app.log("No widgets loaded. Press A to add a widget.");
-                                                } else {
-                                                    app.selected_widget_idx =
-                                                        (app.selected_widget_idx + 1) % app.dashboard_widgets.len();
-                                                    app.log(format!(
-                                                        "Focused widget {} of {}.",
-                                                        app.selected_widget_idx + 1,
-                                                        app.dashboard_widgets.len()
-                                                    ));
-                                                }
+                                                app.dashboard_widgets.clear();
+                                                app.is_adding_widget = false;
+                                                app.log("Probe dashboard is fixed; module focus is disabled.");
                                             }
                                         }
                                         KeyCode::Up => {
@@ -1155,7 +1133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     app.selected_config_field -= 1;
                                                 } else {
                                                     app.selected_config_field =
-                                                        PROJECT_CONFIG_FIELD_COUNT - 1;
+                                                        app.config_field_map.len() - 1;
                                                 }
                                             } else if app.active_tab == ActiveTab::Flasher {
                                                 app.move_flash_selection(-1);
@@ -1164,7 +1142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         KeyCode::Down => {
                                             if app.active_tab == ActiveTab::Configuration {
                                                 if app.selected_config_field
-                                                    < PROJECT_CONFIG_FIELD_COUNT - 1
+                                                    < app.config_field_map.len() - 1
                                                 {
                                                     app.selected_config_field += 1;
                                                 } else {
@@ -1177,7 +1155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         KeyCode::Enter => {
                                             if app.active_tab == ActiveTab::Configuration && app.admin_mode {
                                                 app.is_editing_config = true;
-                                                app.edit_buffer = app.config.get_field(app.selected_config_field);
+                                                app.edit_buffer = app.config.get_field(app.config_real_field_index(app.selected_config_field));
                                             } else if app.active_tab == ActiveTab::Serial {
                                                 app.serial_is_typing = true;
                                             }
@@ -1189,11 +1167,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         Event::Mouse(mouse) => {
                             match mouse.kind {
-                                crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
-                                | crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                                crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                                     if !app.handle_mouse_click(mouse.column, mouse.row, tx.clone()) {
                                         exit = true;
                                     }
+                                }
+                                crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                                    app.handle_mouse_drag(mouse.column, mouse.row, crossterm::event::MouseButton::Left);
+                                    if !app.handle_mouse_click(mouse.column, mouse.row, tx.clone()) {
+                                        exit = true;
+                                    }
+                                }
+                                crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Right) | crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Middle) => {
+                                    app.handle_mouse_drag(mouse.column, mouse.row, crossterm::event::MouseButton::Right);
                                 }
                                 crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
                                     let _ = app.handle_mouse_right_click(mouse.column, mouse.row, tx.clone());

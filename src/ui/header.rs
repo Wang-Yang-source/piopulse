@@ -17,7 +17,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border));
 
-    let title_text = format!(" ☕ PIOPULSE v{} ", env!("CARGO_PKG_VERSION"));
+    let title_text = format!(" ☕PioPulse v{} ", env!("CARGO_PKG_VERSION"));
     let title = Span::styled(
         title_text,
         Style::default()

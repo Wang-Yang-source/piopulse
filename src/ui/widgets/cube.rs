@@ -3,13 +3,57 @@ use crate::ui::theme::CATPPUCCIN_MOCHA;
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
+    symbols::Marker,
     text::Span,
     widgets::canvas::{Canvas, Line as CanvasLine},
     widgets::{Block, BorderType, Borders},
 };
 
-pub fn draw(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
+/// Project a 3D point through rotation + translation + perspective projection.
+/// Returns (screen_x, screen_y, depth_z) for depth-based coloring.
+fn project_vertex(
+    v: &[f64; 3],
+    pitch: f64,
+    roll: f64,
+    yaw: f64,
+    tx: f64,
+    ty: f64,
+    tz: f64,
+    zoom: f64,
+) -> (f64, f64, f64) {
+    let (rx, ry, rz) = (v[0], v[1], v[2]);
+
+    // Rotate around X axis (pitch)
+    let cos_p = pitch.cos();
+    let sin_p = pitch.sin();
+    let (x1, y1, z1) = (rx, ry * cos_p - rz * sin_p, ry * sin_p + rz * cos_p);
+
+    // Rotate around Y axis (roll)
+    let cos_r = roll.cos();
+    let sin_r = roll.sin();
+    let (x2, y2, z2) = (x1 * cos_r + z1 * sin_r, y1, -x1 * sin_r + z1 * cos_r);
+
+    // Rotate around Z axis (yaw)
+    let cos_y = yaw.cos();
+    let sin_y = yaw.sin();
+    let (x3, y3, z3) = (x2 * cos_y - y2 * sin_y, x2 * sin_y + y2 * cos_y, z2);
+
+    // Apply translation
+    let nx = x3 + tx;
+    let ny = y3 + ty;
+    let nz = z3 + tz;
+
+    // Perspective projection
+    let distance = 3.2;
+    let scale = zoom * 1.95 / (distance - nz);
+    let sx = nx * scale;
+    let sy = ny * scale * 0.95;
+
+    (sx, sy, nz)
+}
+
+pub fn draw(f: &mut Frame, app: &App, area: Rect, is_focused: bool, _widget_idx: usize) {
     let (pitch, roll, yaw, tx, ty, tz) = if app.manual_imu_override {
         (
             app.manual_pitch,
@@ -57,20 +101,42 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         }
     };
 
+    // Build title
     let is_zh = app.tool_config.language == "zh";
-    let title_suffix = if app.manual_imu_override {
+    let mode_suffix = if app.manual_imu_override {
         if is_zh {
-            " [手动模式 🎮] "
+            " [手动模式 🎮]"
         } else {
-            " [MANUAL 🎮] "
+            " [MANUAL 🎮]"
         }
     } else {
         if is_zh {
-            " [传感器遥测 ⚡] "
+            " [传感器遥测 ⚡]"
         } else {
-            " [TELEMETRY ⚡] "
+            " [TELEMETRY ⚡]"
         }
     };
+
+    let title_text = if is_focused {
+        if is_zh {
+            format!(
+                " 立方体：3D 姿态{} (T: 手动, X: 坐标轴, UJIKOL: 控制, +/-: 缩放) ",
+                mode_suffix
+            )
+        } else {
+            format!(
+                " cube: 3D Orientation{} (T: Manual, X: Axes, UJIKOL: Ctrl, +/-: Zoom) ",
+                mode_suffix
+            )
+        }
+    } else {
+        if is_zh {
+            format!(" 立方体：3D 姿态{} ", mode_suffix)
+        } else {
+            format!(" cube: 3D Orientation{} ", mode_suffix)
+        }
+    };
+
     let border_color = if is_focused {
         CATPPUCCIN_MOCHA.border_focus
     } else {
@@ -85,6 +151,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
     let aspect = (area.width as f64 / area.height as f64) * 0.5;
     let x_limit = 2.0 * aspect;
 
+    let zoom = app.cube_zoom;
+    let show_axes = app.show_cube_axes;
+
     let cube_canvas = Canvas::default()
         .block(
             Block::default()
@@ -92,25 +161,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
                 .border_type(border_type)
                 .border_style(Style::default().fg(border_color))
                 .title(Span::styled(
-                    if is_focused {
-                        if is_zh {
-                            format!(
-                                " 立方体：3D 姿态{} (T: 手动模式, UJIKOL/方向键: 控制) ",
-                                title_suffix
-                            )
-                        } else {
-                            format!(
-                                " cube: 3D Orientation{} (T: Manual Mode, UJIKOL/Arrows: Ctrl) ",
-                                title_suffix
-                            )
-                        }
-                    } else {
-                        if is_zh {
-                            format!(" 立方体：3D 姿态{} ", title_suffix)
-                        } else {
-                            format!(" cube: 3D Orientation{} ", title_suffix)
-                        }
-                    },
+                    title_text,
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),
@@ -118,9 +169,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
         )
         .x_bounds([-x_limit, x_limit])
         .y_bounds([-2.0, 2.0])
+        .marker(Marker::Braille)
         .paint(move |ctx| {
+            // ========== DEFAULT CUBE RENDERING ==========
             let size = 0.85;
-            let vertices = [
+            let cube_verts: [[f64; 3]; 8] = [
                 [-size, -size, -size],
                 [size, -size, -size],
                 [size, size, -size],
@@ -131,43 +184,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
                 [-size, size, size],
             ];
 
-            let mut projected = Vec::new();
-            for v in &vertices {
-                let (rx, ry, rz) = (v[0], v[1], v[2]);
+            let projected: Vec<(f64, f64)> = cube_verts
+                .iter()
+                .map(|v| {
+                    let (sx, sy, _) = project_vertex(v, pitch, roll, yaw, tx, ty, tz, zoom);
+                    (sx, sy)
+                })
+                .collect();
 
-                let rotate_x = |x: f64, y: f64, z: f64, angle: f64| {
-                    let cos = angle.cos();
-                    let sin = angle.sin();
-                    (x, y * cos - z * sin, y * sin + z * cos)
-                };
-                let rotate_y = |x: f64, y: f64, z: f64, angle: f64| {
-                    let cos = angle.cos();
-                    let sin = angle.sin();
-                    (x * cos + z * sin, y, -x * sin + z * cos)
-                };
-                let rotate_z = |x: f64, y: f64, z: f64, angle: f64| {
-                    let cos = angle.cos();
-                    let sin = angle.sin();
-                    (x * cos - y * sin, x * sin + y * cos, z)
-                };
-
-                let (x1, y1, z1) = rotate_x(rx, ry, rz, pitch);
-                let (x2, y2, z2) = rotate_y(x1, y1, z1, roll);
-                let (x3, y3, z3) = rotate_z(x2, y2, z2, yaw);
-
-                let nx_trans = x3 + tx;
-                let ny_trans = y3 + ty;
-                let nz_trans = z3 + tz;
-
-                let distance = 3.2;
-                let scale = 1.95 / (distance - nz_trans);
-                let sx = nx_trans * scale;
-                let sy = ny_trans * scale * 0.95;
-
-                projected.push((sx, sy));
-            }
-
-            let edges = [
+            let edges: [(usize, usize); 12] = [
                 (0, 1),
                 (1, 2),
                 (2, 3),
@@ -209,6 +234,56 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect, is_focused: bool) {
             ctx.print(text_x, 1.7, format!("Pitch: {:+5.1}°", pitch.to_degrees()));
             ctx.print(text_x, 1.4, format!("Roll : {:+5.1}°", roll.to_degrees()));
             ctx.print(text_x, 1.1, format!("Yaw  : {:+5.1}°", yaw.to_degrees()));
+
+            if show_axes {
+                let x_neg = [-1.5, 0.0, 0.0];
+                let x_pos = [1.5, 0.0, 0.0];
+                let y_neg = [0.0, -1.5, 0.0];
+                let y_pos = [0.0, 1.5, 0.0];
+                let z_neg = [0.0, 0.0, -1.5];
+                let z_pos = [0.0, 0.0, 1.5];
+
+                let (xn, yn, _) = project_vertex(&x_neg, pitch, roll, yaw, tx, ty, tz, zoom);
+                let (xx, xy, _) = project_vertex(&x_pos, pitch, roll, yaw, tx, ty, tz, zoom);
+                let (yn_x, yn_y, _) = project_vertex(&y_neg, pitch, roll, yaw, tx, ty, tz, zoom);
+                let (yx, yy, _) = project_vertex(&y_pos, pitch, roll, yaw, tx, ty, tz, zoom);
+                let (zn_x, zn_y, _) = project_vertex(&z_neg, pitch, roll, yaw, tx, ty, tz, zoom);
+                let (zx, zy, _) = project_vertex(&z_pos, pitch, roll, yaw, tx, ty, tz, zoom);
+
+                let axis_red = Color::Rgb(120, 60, 60);
+                let axis_green = Color::Rgb(60, 120, 60);
+                let axis_blue = Color::Rgb(60, 60, 120);
+
+                let text_red = Color::Rgb(180, 100, 100);
+                let text_green = Color::Rgb(100, 180, 100);
+                let text_blue = Color::Rgb(100, 100, 180);
+
+                ctx.draw(&CanvasLine {
+                    x1: xn,
+                    y1: yn,
+                    x2: xx,
+                    y2: xy,
+                    color: axis_red,
+                });
+                ctx.draw(&CanvasLine {
+                    x1: yn_x,
+                    y1: yn_y,
+                    x2: yx,
+                    y2: yy,
+                    color: axis_green,
+                });
+                ctx.draw(&CanvasLine {
+                    x1: zn_x,
+                    y1: zn_y,
+                    x2: zx,
+                    y2: zy,
+                    color: axis_blue,
+                });
+
+                ctx.print(xx, xy, Span::styled("X", Style::default().fg(text_red)));
+                ctx.print(yx, yy, Span::styled("Y", Style::default().fg(text_green)));
+                ctx.print(zx, zy, Span::styled("Z", Style::default().fg(text_blue)));
+            }
         });
 
     f.render_widget(cube_canvas, area);

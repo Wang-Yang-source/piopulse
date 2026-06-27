@@ -312,7 +312,7 @@ fn draw_logo_progress_screen(
     let splash_bg = mocha::BASE;
     let splash_panel = mocha::MANTLE;
 
-    // Paint every splash cell with an explicit color so transparent terminals do not show through.
+    // Paint every splash cell with an explicit Catppuccin Mocha color.
     f.render_widget(Clear, area);
     let bg_block = Block::default().style(Style::default().bg(splash_bg));
     f.render_widget(bg_block, area);

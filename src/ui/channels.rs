@@ -11,21 +11,36 @@ use ratatui::{
 use std::path::Path;
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
-    let main_area = area;
-    app.layout_zones.flash_device_table = main_area;
+    // Split area: 3 lines for dashboard, remainder for device list/empty state
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+
+    draw_summary_dashboard(f, app, layout[0]);
+    app.layout_zones.flash_device_table = layout[1];
 
     if app.channels.is_empty() {
-        draw_empty_state(f, app, main_area);
+        draw_empty_state(f, app, layout[1]);
     } else {
-        draw_device_table(f, app, main_area);
+        // Set auto toggle to the right side of the dashboard
+        app.layout_zones.flash_auto_toggle = Rect::new(
+            layout[0]
+                .x
+                .saturating_add(layout[0].width.saturating_sub(30)),
+            layout[0].y,
+            30,
+            layout[0].height,
+        );
+        draw_device_table(f, app, layout[1]);
     }
 }
 
 fn draw_empty_state(f: &mut Frame, app: &mut App, area: Rect) {
-    let centered_area = if area.width < 76 || area.height < 16 {
+    let centered_area = if area.width < 76 || area.height < 18 {
         area
     } else {
-        crate::ui::center_rect(65, 14, area)
+        crate::ui::center_rect(65, 18, area)
     };
     app.layout_zones.flash_empty_state = centered_area;
     let lang = &app.tool_config.language;
@@ -140,15 +155,15 @@ fn draw_empty_state(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled(
                     if app.auto_flash {
                         if lang == "zh" {
-                            "启用 [按A键禁用]"
+                            "启用 [点击切换]"
                         } else {
-                            "ENABLED [Press A to disable]"
+                            "ENABLED [Click to toggle]"
                         }
                     } else {
                         if lang == "zh" {
-                            "禁用 [按A键启用]"
+                            "禁用 [点击切换]"
                         } else {
-                            "DISABLED [Press A to enable]"
+                            "DISABLED [Click to toggle]"
                         }
                     },
                     Style::default()
@@ -162,6 +177,17 @@ fn draw_empty_state(f: &mut Frame, app: &mut App, area: Rect) {
             ]),
             Line::from(""),
         ]);
+
+        // The Auto-Flash line is the 7th line in the block (0-indexed).
+        // Adding 1 for the top border, the Y offset from centered_area.y is 8.
+        app.layout_zones.flash_auto_toggle = Rect::new(
+            centered_area.x + 2,
+            centered_area.y + 8,
+            centered_area.width.saturating_sub(4),
+            1,
+        );
+    } else {
+        app.layout_zones.flash_auto_toggle = Rect::default();
     }
 
     info_lines.extend([
@@ -190,7 +216,6 @@ fn draw_empty_state(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(info_lines).block(block), centered_area);
 }
 
-#[allow(dead_code)]
 fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
     let lang = &app.tool_config.language;
     let total = app.channels.len();
@@ -254,7 +279,19 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
             "Auto-Flash: "
         }),
         Span::styled(
-            if app.auto_flash { "ON" } else { "OFF" },
+            if app.auto_flash {
+                if lang == "zh" {
+                    "ON [点击切换]"
+                } else {
+                    "ON [Click to toggle]"
+                }
+            } else {
+                if lang == "zh" {
+                    "OFF [点击切换]"
+                } else {
+                    "OFF [Click to toggle]"
+                }
+            },
             Style::default()
                 .fg(if app.auto_flash {
                     CATPPUCCIN_MOCHA.success
@@ -308,254 +345,148 @@ fn draw_summary_dashboard(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_device_table(f: &mut Frame, app: &mut App, area: Rect) {
     let lang = &app.tool_config.language;
-    let tiny = area.width < 76;
-    let compact = area.width < 140;
-    let mut rows = Vec::new();
-    let visible_rows = area.height.saturating_sub(3) as usize;
+    let visible_rows = area.height.saturating_sub(2) as usize;
     let max_scroll = app.channels.len().saturating_sub(visible_rows);
     app.flash_table_scroll = app.flash_table_scroll.min(max_scroll);
 
-    for (idx, channel) in app
-        .channels
-        .iter()
-        .enumerate()
-        .skip(app.flash_table_scroll)
-        .take(visible_rows)
-    {
-        let is_selected = idx == app.selected_channel_idx;
-        let is_hovered = app.hover_flash_row == Some(idx);
+    let title_text = flash_table_title(
+        lang,
+        app.flash_table_scroll,
+        visible_rows,
+        app.channels.len(),
+    );
 
-        let port_prefix = if is_selected { "> " } else { "  " };
-        let port_text = format!("{}{}", port_prefix, channel.port);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
+        .style(Style::default().bg(mocha::MANTLE))
+        .title(Span::styled(
+            title_text,
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if inner.width == 0 || inner.height == 0 || app.channels.is_empty() {
+        return;
+    }
+
+    let row_constraints = vec![Constraint::Length(1); visible_rows];
+    let list_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(row_constraints)
+        .split(inner);
+
+    let mut ch_idx = app.flash_table_scroll;
+
+    for y in 0..visible_rows {
+        if ch_idx >= app.channels.len() {
+            break;
+        }
+
+        let channel = &app.channels[ch_idx];
+        let is_selected = ch_idx == app.selected_channel_idx;
+        let is_hovered = app.hover_flash_row == Some(ch_idx);
+
+        let bg_color = if is_selected {
+            mocha::SURFACE1
+        } else if is_hovered {
+            mocha::SURFACE0
+        } else if ch_idx % 2 == 0 {
+            mocha::MANTLE
+        } else {
+            mocha::BASE
+        };
+
+        let port_text = format!("{:<8}", channel.port);
         let port_style = if is_selected {
             Style::default()
                 .fg(CATPPUCCIN_MOCHA.accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(CATPPUCCIN_MOCHA.text)
+            Style::default()
+                .fg(CATPPUCCIN_MOCHA.text)
+                .add_modifier(Modifier::BOLD)
         };
 
-        let chip_text = channel
-            .chip
-            .as_deref()
-            .unwrap_or_else(|| tr("flash_detecting", lang));
-        let (usable_text, usable_style) = flash_usable_status(channel, lang);
-        let mac_text = channel.mac.as_deref().unwrap_or("XX:XX:XX:XX:XX:XX");
-        let sn_text = channel.serial_number.as_deref().unwrap_or("-");
-        let trace_text = channel.trace_id.as_deref().unwrap_or("-");
-
-        let (status_text, status_style) = if channel.finished {
+        let (status_text, status_color) = if channel.finished {
             if channel.success {
                 (
-                    tr("flash_status_success", lang).to_string(),
-                    Style::default()
-                        .fg(CATPPUCCIN_MOCHA.success)
-                        .add_modifier(Modifier::BOLD),
+                    if lang == "zh" { "成功" } else { "PASS" },
+                    CATPPUCCIN_MOCHA.success,
                 )
             } else {
-                let err_msg = channel
-                    .error
-                    .as_deref()
-                    .unwrap_or_else(|| if lang == "zh" { "未知" } else { "Unknown" });
                 (
-                    tr("flash_status_failed", lang).replace("{}", err_msg),
-                    Style::default()
-                        .fg(CATPPUCCIN_MOCHA.danger)
-                        .add_modifier(Modifier::BOLD),
+                    if lang == "zh" { "失败" } else { "FAIL" },
+                    CATPPUCCIN_MOCHA.danger,
                 )
             }
         } else if channel.status == "Idle" {
             (
-                tr("flash_status_idle", lang).to_string(),
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+                if lang == "zh" { "待机" } else { "IDLE" },
+                CATPPUCCIN_MOCHA.text_muted,
             )
         } else {
-            let status_disp = if lang == "zh" {
-                match channel.status.as_str() {
-                    "Flashing" => "烧录中",
-                    "Erasing" => "擦除中",
-                    "Verifying" => "校验中",
-                    "Connecting" => "连接中",
-                    "Blank Check" => "空片检查",
-                    "Erase Plan" => "擦除规划",
-                    "Functional Test" => "功能测试",
-                    "Auto sensing" => "自动感应",
-                    "Auto detected" => "检测到产品",
-                    "Waiting for product" => "等待产品",
-                    "Remove flashed board" => "请取下已烧录板",
-                    s => s,
-                }
-            } else {
-                &channel.status
-            };
             (
-                status_disp.to_string(),
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.warning)
-                    .add_modifier(Modifier::BOLD),
+                if lang == "zh" { "活动" } else { "WORK" },
+                CATPPUCCIN_MOCHA.warning,
             )
         };
 
-        let progress_text = make_progress_bar(channel.progress, 10);
-        let progress_style = if channel.finished && channel.success {
-            Style::default().fg(CATPPUCCIN_MOCHA.success)
+        let pct = channel.progress;
+        let bar_width = 16;
+        let filled = (pct as usize * bar_width) / 100;
+        let empty = bar_width.saturating_sub(filled);
+        let bar_text = format!("{}{} {:>3}%", "█".repeat(filled), "░".repeat(empty), pct);
+
+        let chip_text = channel.chip.as_deref().unwrap_or("Detecting...");
+        let msg = if !channel.qa_result.is_empty() {
+            format!("QA: {}", channel.qa_result)
         } else if channel.finished && !channel.success {
-            Style::default().fg(CATPPUCCIN_MOCHA.danger)
-        } else if channel.status == "Idle" {
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted)
+            channel
+                .error
+                .as_deref()
+                .unwrap_or("Unknown Error")
+                .to_string()
+        } else if channel.status != "Idle" {
+            channel.status.clone()
         } else {
-            Style::default().fg(CATPPUCCIN_MOCHA.warning)
+            format!("{}", chip_text)
         };
 
-        let row_style = if is_selected {
-            Style::default().bg(mocha::SURFACE0)
-        } else if is_hovered {
-            Style::default().bg(CATPPUCCIN_MOCHA.selection_bg)
-        } else if idx % 2 == 0 {
-            Style::default().bg(mocha::MANTLE)
-        } else {
-            Style::default().bg(mocha::BASE)
-        };
-
-        let cells = if tiny {
-            vec![
-                Cell::from(Span::styled(port_text, port_style)),
-                Cell::from(Span::raw(chip_text)),
-                Cell::from(Span::styled(status_text, status_style)),
-                Cell::from(Span::styled(progress_text, progress_style)),
-            ]
-        } else if compact {
-            vec![
-                Cell::from(Span::styled(port_text, port_style)),
-                Cell::from(Span::styled(usable_text, usable_style)),
-                Cell::from(Span::raw(chip_text)),
-                Cell::from(Span::styled(status_text, status_style)),
-                Cell::from(Span::styled(progress_text, progress_style)),
-                Cell::from(Span::styled(
-                    channel.qa_result.clone(),
-                    qa_style(&channel.qa_result),
-                )),
-            ]
-        } else {
-            vec![
-                Cell::from(Span::styled(port_text, port_style)),
-                Cell::from(Span::styled(usable_text, usable_style)),
-                Cell::from(Span::raw(chip_text)),
-                Cell::from(Span::raw(sn_text)),
-                Cell::from(Span::raw(mac_text)),
-                Cell::from(Span::styled(status_text, status_style)),
-                Cell::from(Span::styled(progress_text, progress_style)),
-                Cell::from(Span::raw(format_bytes(channel.bytes_written))),
-                Cell::from(Span::styled(
-                    channel.qa_result.clone(),
-                    qa_style(&channel.qa_result),
-                )),
-                Cell::from(Span::raw(channel.security_state.clone())),
-                Cell::from(Span::raw(trace_text)),
-            ]
-        };
-
-        rows.push(Row::new(cells).style(row_style));
-    }
-
-    let headers = if tiny && lang == "zh" {
-        vec!["端口", "芯片", "流程", "进度"]
-    } else if tiny {
-        vec!["Port", "Chip", "Flow", "Progress"]
-    } else if compact && lang == "zh" {
-        vec!["端口", "可用", "芯片", "流程", "进度", "QA"]
-    } else if compact {
-        vec!["Port", "Use", "Chip", "Flow", "Progress", "QA"]
-    } else if lang == "zh" {
-        vec![
-            "端口",
-            "可用性",
-            "目标芯片",
-            "SN",
-            "MAC 地址",
-            "流程",
-            "进度",
-            "写入",
-            "QA",
-            "安全",
-            "追溯",
-        ]
-    } else {
-        vec![
-            "Port",
-            "Usable",
-            "Target Chip",
-            "SN",
-            "MAC Address",
-            "Flow",
-            "Progress",
-            "Bytes",
-            "QA",
-            "Security",
-            "Trace",
-        ]
-    };
-
-    let widths: Vec<Constraint> = if tiny {
-        vec![
-            Constraint::Length(14),
-            Constraint::Length(10),
-            Constraint::Min(12),
-            Constraint::Length(16),
-        ]
-    } else if compact {
-        vec![
-            Constraint::Length(14),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(16),
-            Constraint::Length(16),
-            Constraint::Min(15), // Let QA column take the remaining space to show long results
-        ]
-    } else {
-        vec![
-            Constraint::Length(14),
-            Constraint::Length(10), // Usable
-            Constraint::Length(10), // Chip
-            Constraint::Length(24), // SN
-            Constraint::Length(17), // MAC
-            Constraint::Length(16), // Flow
-            Constraint::Length(16), // Progress
-            Constraint::Length(9),  // Bytes
-            Constraint::Length(22), // QA (expanded to fit PASS (LED,BUTTON,WIFI))
-            Constraint::Length(12), // Security
-            Constraint::Min(10),    // Trace (expanded/min)
-        ]
-    };
-
-    let table = Table::new(rows, widths)
-        .header(
-            Row::new(headers.into_iter().map(Cell::from).collect::<Vec<_>>()).style(
+        let line = Line::from(vec![
+            Span::styled(
+                if is_selected { " > " } else { "   " },
+                Style::default().fg(CATPPUCCIN_MOCHA.accent).bg(bg_color),
+            ),
+            Span::styled(port_text, port_style.bg(bg_color)),
+            Span::styled(
+                format!(" │ {:<4} │ ", status_text),
                 Style::default()
-                    .fg(mocha::SUBTEXT1)
-                    .bg(mocha::SURFACE0)
+                    .fg(status_color)
+                    .bg(bg_color)
                     .add_modifier(Modifier::BOLD),
             ),
-        )
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
-                .title(Span::styled(
-                    flash_table_title(
-                        lang,
-                        app.flash_table_scroll,
-                        visible_rows,
-                        app.channels.len(),
-                    ),
-                    Style::default()
-                        .fg(CATPPUCCIN_MOCHA.text)
-                        .add_modifier(Modifier::BOLD),
-                )),
+            Span::styled(bar_text, Style::default().fg(status_color).bg(bg_color)),
+            Span::styled(
+                format!(" │ {} ", msg),
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text_muted)
+                    .bg(bg_color),
+            ),
+        ]);
+
+        f.render_widget(
+            Paragraph::new(line).style(Style::default().bg(bg_color)),
+            list_rows[y],
         );
 
-    f.render_widget(table, area);
+        ch_idx += 1;
+    }
 }
 
 fn make_progress_bar(pct: u8, width: usize) -> String {
@@ -781,7 +712,7 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([
             Constraint::Length(3), // Mode selector and DoNotChgBin
             Constraint::Min(5),    // Images Table
-            Constraint::Length(4), // Validation status
+            Constraint::Length(6), // Validation status
         ])
         .split(inner_area);
 
@@ -994,8 +925,8 @@ pub fn draw_guided_burning_panel(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(10),
         Constraint::Min(15),
         Constraint::Length(10),
-        Constraint::Length(10),
         Constraint::Length(12),
+        Constraint::Length(14),
     ];
 
     let table = Table::new(rows, widths)

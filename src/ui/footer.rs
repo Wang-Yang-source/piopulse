@@ -86,23 +86,17 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         if app.active_tab == crate::app::ActiveTab::Widgets {
             footer_spans.extend([
                 Span::styled(
-                    "A",
+                    "probe-rs",
                     Style::default()
-                        .fg(CATPPUCCIN_MOCHA.accent)
+                        .fg(CATPPUCCIN_MOCHA.success)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    if lang == "zh" { "：加 | " } else { " Add | " },
-                    Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-                ),
-                Span::styled(
-                    "D",
-                    Style::default()
-                        .fg(CATPPUCCIN_MOCHA.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    if lang == "zh" { "：删 | " } else { " Del | " },
+                    if lang == "zh" {
+                        "：探针仪表盘 | "
+                    } else {
+                        " Dashboard | "
+                    },
                     Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
                 ),
             ]);
@@ -206,23 +200,17 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         if app.active_tab == crate::app::ActiveTab::Widgets {
             footer_spans.extend([
                 Span::styled(
-                    "A",
+                    "probe-rs",
                     Style::default()
-                        .fg(CATPPUCCIN_MOCHA.accent)
+                        .fg(CATPPUCCIN_MOCHA.success)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    crate::ui::tr("add_module", lang),
-                    Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-                ),
-                Span::styled(
-                    "D",
-                    Style::default()
-                        .fg(CATPPUCCIN_MOCHA.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    crate::ui::tr("delete_module", lang),
+                    if lang == "zh" {
+                        "：探针 / 目标 / Flash / 寄存器 / 内存 / RTT / 性能 | "
+                    } else {
+                        ": probe / target / flash / registers / memory / RTT / profiling | "
+                    },
                     Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
                 ),
             ]);

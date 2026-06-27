@@ -3,3 +3,9 @@
 /Vodka
 /piopulse.toml
 /.piopulse/
+/libtest_layout.rlib
+/replace_ui.py
+/revert_app.py
+/rewrite.py
+/rewrite_ui.py
+/test_layout.rs

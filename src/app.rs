@@ -1,6 +1,4 @@
-use crate::config::{
-    FirmwareImage, PROJECT_CONFIG_FIELD_COUNT, ProjectConfig, ToolConfig, create_merged_flash_image,
-};
+use crate::config::{FirmwareImage, ProjectConfig, ToolConfig, create_merged_flash_image};
 use crate::worker::{self, WorkerMessage};
 use ratatui::layout::Rect;
 use std::fs::{File, OpenOptions};
@@ -43,6 +41,7 @@ pub struct LayoutZones {
     pub flash_mode_toggle: Rect,
     pub flash_donotchg_toggle: Rect,
     pub flash_manifest_status: Rect,
+    pub flash_auto_toggle: Rect,
     pub custom_baud_modal: Rect,
     pub auto_reply_modal: Rect,
     pub flash_manifest_table: Rect,
@@ -126,6 +125,16 @@ pub struct Stats {
     pub total_passed: u32,
     pub total_failed: u32,
     pub total_attempted: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct FlashBatch {
+    pub id: u64,
+    pub target_ports: std::collections::HashSet<String>,
+    pub completed_ports: std::collections::HashSet<String>,
+    pub passed: u32,
+    pub failed: u32,
+    pub started_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +227,13 @@ pub enum DashboardEmptyAction {
     Cube,
 }
 
+/// Determines where the file picker result is directed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilePickerTarget {
+    /// Update a firmware manifest image path (existing behavior).
+    ManifestImage,
+}
+
 pub const PARAM_SLIDER_LABEL_WIDTH: u16 = 6;
 pub const PARAM_SLIDER_TRACK_WIDTH: u16 = 10;
 pub const PARAM_SLIDER_LAST_OFFSET: u16 = PARAM_SLIDER_TRACK_WIDTH - 1;
@@ -238,6 +254,10 @@ pub struct App {
     pub use_merged_flash: bool,
     pub flash_batch_mode: bool,
     pub manifest_locked: bool,
+    pub pio_build_in_progress: bool,
+    /// Maps UI row index → real config field index (from get_field/set_field).
+    /// Rebuilt when chip/framework changes to hide ESP-specific fields for non-ESP projects.
+    pub config_field_map: Vec<usize>,
     pub show_custom_baud_modal: bool,
     pub custom_baud_input: String,
     pub show_auto_reply_modal: bool,
@@ -261,6 +281,7 @@ pub struct App {
     pub active_tab: ActiveTab,
     pub selected_channel_idx: usize,
     pub selected_config_field: usize,
+    pub config_scroll_offset: usize,
     pub is_editing_config: bool,
     pub edit_buffer: String,
     pub hover_tab: Option<usize>,
@@ -285,6 +306,8 @@ pub struct App {
     pub exit_menu_selected: usize,
 
     pub is_flashing: bool,
+    pub active_flash_batch: Option<FlashBatch>,
+    pub next_flash_batch_id: u64,
     pub start_time: Option<Instant>,
     pub elapsed_time: Duration,
 
@@ -303,6 +326,9 @@ pub struct App {
     pub manual_tx: f64,
     pub manual_ty: f64,
     pub manual_tz: f64,
+    pub cube_zoom: f64,
+    pub show_cube_axes: bool,
+    pub last_drag_pos: Option<(u16, u16)>,
 
     // Robot Dashboard State (PID simulation and Widget focuses)
     pub param_kp: f64,
@@ -322,6 +348,8 @@ pub struct App {
     pub is_adding_widget: bool,
     pub add_menu_selected: usize,
     pub widget_search_input: String,
+
+    pub file_picker_target: FilePickerTarget,
 
     // Serial Terminal Debugger State (Tab 1)
     pub serial_send_buffer: String,
@@ -600,6 +628,7 @@ impl App {
             active_tab: ActiveTab::Serial,
             selected_channel_idx: 0,
             selected_config_field: 0,
+            config_scroll_offset: 0,
             is_editing_config: false,
             edit_buffer: String::new(),
             hover_tab: None,
@@ -621,6 +650,8 @@ impl App {
             show_exit_menu: false,
             exit_menu_selected: 0,
             is_flashing: false,
+            active_flash_batch: None,
+            next_flash_batch_id: 1,
             start_time: None,
             elapsed_time: Duration::from_secs(0),
             last_port_scan: Instant::now() - Duration::from_secs(10), // force scan on startup
@@ -638,6 +669,9 @@ impl App {
             manual_tx: 0.0,
             manual_ty: 0.0,
             manual_tz: 0.0,
+            cube_zoom: 1.0,
+            show_cube_axes: true,
+            last_drag_pos: None,
             param_kp: 1.5,
             param_ki: 0.1,
             param_kd: 0.15,
@@ -653,6 +687,7 @@ impl App {
             is_adding_widget: false,
             add_menu_selected: 0,
             widget_search_input: String::new(),
+            file_picker_target: FilePickerTarget::ManifestImage,
 
             // Serial Terminal Debugger state
             serial_send_buffer: String::new(),
@@ -695,7 +730,12 @@ impl App {
             use_merged_flash,
             flash_batch_mode: true,
             manifest_locked,
+            pio_build_in_progress: pio_detected,
+            config_field_map: Vec::new(),
         };
+
+        let filled_tool_defaults = app.config.fill_missing_tool_defaults();
+        app.rebuild_config_field_map();
 
         crate::vofa::ACTIVE_VOFA_MODE
             .store(app.vofa_mode.to_u8(), std::sync::atomic::Ordering::Relaxed);
@@ -716,7 +756,160 @@ impl App {
         if let Some(err) = log_init_error {
             app.log(format!("Session log file unavailable: {}", err));
         }
+        if filled_tool_defaults {
+            if app.save_config("save inferred PlatformIO defaults") {
+                app.log("Filled missing upload/debug tool defaults in project config.");
+            }
+        }
         app
+    }
+
+    /// If a PlatformIO project was detected, trigger `pio run` in the background
+    /// so that firmware binaries are ready by the time the user wants to flash.
+    pub fn trigger_startup_build(
+        &mut self,
+        tx: tokio::sync::mpsc::Sender<crate::worker::WorkerMessage>,
+    ) {
+        if !self.pio_build_in_progress {
+            return;
+        }
+        let project_dir = if !self.config.platformio_project_dir.is_empty() {
+            std::path::PathBuf::from(&self.config.platformio_project_dir)
+        } else {
+            // Fallback: try to infer from app_path
+            let app_path = std::path::Path::new(&self.config.app_path);
+            let mut cursor = app_path.parent();
+            let mut found = None;
+            while let Some(dir) = cursor {
+                if dir.join("platformio.ini").exists() {
+                    found = Some(dir.to_path_buf());
+                    break;
+                }
+                cursor = dir.parent();
+            }
+            match found {
+                Some(d) => d,
+                None => {
+                    self.pio_build_in_progress = false;
+                    self.log("Auto-build skipped: cannot determine PlatformIO project directory.");
+                    return;
+                }
+            }
+        };
+
+        // Infer env name from app_path (e.g. .pio/build/<env>/firmware.elf)
+        let env_name = {
+            let app_path = std::path::Path::new(&self.config.app_path);
+            let mut components = app_path.components().peekable();
+            let mut env = None;
+            while let Some(component) = components.next() {
+                if component.as_os_str() == ".pio" {
+                    if components
+                        .next()
+                        .map(|c| c.as_os_str() == "build")
+                        .unwrap_or(false)
+                    {
+                        env = components
+                            .next()
+                            .and_then(|c| c.as_os_str().to_str())
+                            .map(|s| s.to_string());
+                    }
+                    break;
+                }
+            }
+            env
+        };
+
+        self.log(format!(
+            "🔨 Auto-building PlatformIO project: {} (env: {})...",
+            project_dir.display(),
+            env_name.as_deref().unwrap_or("default")
+        ));
+
+        crate::worker::start_pio_build_task(project_dir, env_name, tx);
+    }
+
+    /// Rebuild the mapping from UI row index to real config field index.
+    /// Call this whenever chip_type or framework changes.
+    pub fn rebuild_config_field_map(&mut self) {
+        let cfg = &self.config;
+        let is_esp = cfg.chip_type.to_lowercase().contains("esp")
+            || cfg.framework.to_lowercase().contains("espidf")
+            || cfg.framework.to_lowercase().contains("arduino")
+            || (cfg.framework.is_empty() && !cfg.bootloader_path.is_empty());
+
+        let mut map: Vec<usize> = Vec::new();
+
+        // Universal fields
+        map.push(0); // name
+        map.push(1); // chip_type
+        map.push(30); // framework
+        map.push(31); // upload_protocol
+        map.push(32); // debug_tool
+        map.push(2); // baud_rate
+
+        if is_esp {
+            map.push(3); // flash_mode
+            map.push(4); // flash_freq
+            map.push(5); // flash_size
+            map.push(6); // bootloader_offset
+            map.push(7); // bootloader_path
+            map.push(8); // partitions_offset
+            map.push(9); // partitions_path
+            map.push(10); // otadata_offset
+            map.push(11); // otadata_path
+        }
+
+        map.push(12); // app_offset
+        map.push(13); // app_path
+
+        if is_esp {
+            map.push(14); // nvs_offset
+        }
+
+        map.push(15); // verify_method
+        map.push(16); // blank_check
+        map.push(17); // erase_mode
+        map.push(18); // incremental_programming
+
+        if is_esp {
+            map.push(19); // secure_boot
+            map.push(20); // flash_encryption
+            map.push(21); // lock_after_flash
+        }
+
+        map.push(22); // operator_role
+        map.push(23); // firmware_version
+        map.push(24); // sn_prefix
+        map.push(25); // lot_code
+        map.push(26); // mes_endpoint
+        map.push(27); // label_template
+        map.push(28); // qa_test_script
+        map.push(29); // do_not_chg_bin
+
+        self.config_field_map = map;
+        // Ensure selected field is in bounds
+        if self.selected_config_field >= self.config_field_map.len() {
+            self.selected_config_field = 0;
+        }
+    }
+
+    /// Translate UI row index to real config field index.
+    pub fn config_real_field_index(&self, ui_row: usize) -> usize {
+        self.config_field_map.get(ui_row).copied().unwrap_or(0)
+    }
+
+    /// Adjust config_scroll_offset so that selected_config_field is visible.
+    /// `visible_rows` is the number of rows that fit in the config table area.
+    pub fn ensure_config_field_visible(&mut self, visible_rows: usize) {
+        if visible_rows == 0 {
+            return;
+        }
+        if self.selected_config_field < self.config_scroll_offset {
+            self.config_scroll_offset = self.selected_config_field;
+        } else if self.selected_config_field >= self.config_scroll_offset + visible_rows {
+            self.config_scroll_offset = self.selected_config_field - visible_rows + 1;
+        }
     }
 
     pub fn log(&mut self, msg: impl Into<String>) {
@@ -747,6 +940,16 @@ impl App {
         self.log(format!("[{}] {}", port, msg.into()));
     }
 
+    pub fn save_config(&mut self, action: &str) -> bool {
+        match self.config.save_to_file(&self.config_path) {
+            Ok(()) => true,
+            Err(err) => {
+                self.log(format!("Failed to {}: {}", action, err));
+                false
+            }
+        }
+    }
+
     pub fn scan_ports(&mut self, tx: Option<tokio::sync::mpsc::Sender<WorkerMessage>>) {
         let ports = worker::get_available_serial_ports();
 
@@ -766,20 +969,25 @@ impl App {
             }
         }
 
+        let mut removed_ports = Vec::new();
         // Any channels left in self.channels were unplugged
         if !self.channels.is_empty() {
-            let removed_ports: Vec<String> = self
+            removed_ports = self
                 .channels
                 .iter()
                 .map(|channel| channel.port.clone())
                 .collect();
-            for port in removed_ports {
+            for port in &removed_ports {
                 self.log(format!("Device unplugged: {}", port));
             }
             updated = true;
         }
 
         self.channels = new_channels;
+
+        if !removed_ports.is_empty() {
+            self.mark_removed_flash_targets_failed(&removed_ports);
+        }
 
         if updated {
             self.log(format!(
@@ -798,6 +1006,44 @@ impl App {
         }
     }
 
+    fn mark_removed_flash_targets_failed(&mut self, removed_ports: &[String]) {
+        let mut failed_ports = Vec::new();
+        let mut completed_batch = None;
+        {
+            let Some(batch) = self.active_flash_batch.as_mut() else {
+                return;
+            };
+
+            for port in removed_ports {
+                if batch.target_ports.contains(port) && batch.completed_ports.insert(port.clone()) {
+                    batch.failed += 1;
+                    self.stats.total_failed += 1;
+                    failed_ports.push(port.clone());
+                }
+            }
+
+            if batch.completed_ports.len() >= batch.target_ports.len() {
+                completed_batch = self.active_flash_batch.take();
+            }
+        }
+
+        for port in &failed_ports {
+            self.log(format!(
+                "[{}] Flashing FAILED: device was unplugged before the batch completed.",
+                port
+            ));
+        }
+
+        if let Some(batch) = completed_batch {
+            self.is_flashing = false;
+            let total_secs = batch.started_at.elapsed().as_secs_f32();
+            self.log(format!(
+                "--- Batch #{} Flashing Completed in {:.2}s. Passed: {}, Failed: {} ---",
+                batch.id, total_secs, batch.passed, batch.failed
+            ));
+        }
+    }
+
     pub fn toggle_merged_flash(&mut self) {
         if self.manifest_locked {
             self.log(
@@ -807,7 +1053,7 @@ impl App {
         }
         self.use_merged_flash = !self.use_merged_flash;
         self.config.use_merged_flash = self.use_merged_flash;
-        let _ = self.config.save_to_file(&self.config_path);
+        self.save_config("save flash mode");
         self.log(format!(
             "Flash mode toggled to: {}",
             if self.use_merged_flash {
@@ -826,7 +1072,7 @@ impl App {
             return;
         }
         self.config.do_not_chg_bin = !self.config.do_not_chg_bin;
-        let _ = self.config.save_to_file(&self.config_path);
+        self.save_config("save DoNotChgBin setting");
         self.log(format!(
             "DoNotChgBin set to {}.",
             if self.config.do_not_chg_bin {
@@ -1009,9 +1255,17 @@ impl App {
             self.log("Flash request ignored because no device rows are selected.");
             return;
         }
+        let target_indices: Vec<usize> = indices
+            .into_iter()
+            .filter(|idx| *idx < self.channels.len())
+            .collect();
+        if target_indices.is_empty() {
+            self.log("Flash request ignored because selected device rows are no longer available.");
+            return;
+        }
 
         if !self.ensure_flash_manifest_ready() {
-            for idx in indices {
+            for idx in target_indices {
                 if let Some(channel) = self.channels.get_mut(idx) {
                     channel.status = "Manifest missing".to_string();
                     channel.progress = 0;
@@ -1029,18 +1283,38 @@ impl App {
             std::thread::sleep(Duration::from_millis(150));
         }
 
+        let target_ports: std::collections::HashSet<String> = target_indices
+            .iter()
+            .filter_map(|idx| self.channels.get(*idx).map(|channel| channel.port.clone()))
+            .collect();
+        if target_ports.is_empty() {
+            self.log("Flash request ignored because no target ports are available.");
+            return;
+        }
+
         self.is_flashing = true;
-        self.start_time = Some(Instant::now());
+        let started_at = Instant::now();
+        self.start_time = Some(started_at);
         self.elapsed_time = Duration::from_secs(0);
+        let batch_id = self.next_flash_batch_id;
+        self.next_flash_batch_id = self.next_flash_batch_id.saturating_add(1);
+        self.active_flash_batch = Some(FlashBatch {
+            id: batch_id,
+            target_ports,
+            completed_ports: std::collections::HashSet::new(),
+            passed: 0,
+            failed: 0,
+            started_at,
+        });
         self.log(format!(
             "--- Start Flashing {} ({}) ---",
             scope,
-            indices.len()
+            target_indices.len()
         ));
 
         let config_arc = Arc::new(self.config.clone());
 
-        for idx in indices {
+        for idx in target_indices {
             let Some(channel) = self.channels.get_mut(idx) else {
                 continue;
             };
@@ -1115,117 +1389,63 @@ impl App {
 
     pub fn play_sound(&self, effect: SoundEffect) {
         std::thread::spawn(move || {
-            let sample_rate = 8000.0;
+            let sample_rate = 16_000.0;
+
+            fn render_sequence(sample_rate: f64, notes: &[(f64, f64, f64)], gain: f64) -> Vec<u8> {
+                let mut data = Vec::new();
+                for &(freq, duration, gap) in notes {
+                    let samples = (sample_rate * duration) as usize;
+                    let attack = (sample_rate * 0.012).max(1.0) as usize;
+                    let release = (sample_rate * 0.035).max(1.0) as usize;
+
+                    for i in 0..samples {
+                        let t = i as f64 / sample_rate;
+                        let attack_env = (i as f64 / attack as f64).min(1.0);
+                        let release_env =
+                            ((samples.saturating_sub(i)) as f64 / release as f64).min(1.0);
+                        let env = attack_env.min(release_env);
+                        let fundamental = (2.0 * std::f64::consts::PI * freq * t).sin();
+                        let soft_harmonic =
+                            0.18 * (2.0 * std::f64::consts::PI * freq * 2.0 * t).sin();
+                        let sample = (fundamental + soft_harmonic) * env * gain;
+                        let byte_val = (127.5 + 127.0 * sample).clamp(0.0, 255.0) as u8;
+                        data.push(byte_val);
+                    }
+
+                    data.extend(std::iter::repeat(128).take((sample_rate * gap) as usize));
+                }
+                data
+            }
+
             let bytes = match effect {
-                SoundEffect::Boot => {
-                    let duration = 0.55;
-                    let num_samples = (sample_rate * duration) as usize;
-                    let mut data = Vec::with_capacity(num_samples);
-                    for i in 0..num_samples {
-                        let t = i as f64 / sample_rate;
-                        let env = (-4.0 * t).exp();
-                        let fc = 350.0 + 550.0 * (t / duration);
-                        let fm = 110.0;
-                        let index = 8.0 * (1.0 - t / duration);
-
-                        let phase_m = 2.0 * std::f64::consts::PI * fm * t;
-                        let phase_c = 2.0 * std::f64::consts::PI * fc * t;
-                        let sample = (phase_c + index * phase_m.sin()).sin();
-                        let byte_val = (127.5 + 127.0 * sample * env) as u8;
-                        data.push(byte_val);
-                    }
-                    data
-                }
-                SoundEffect::Success => {
-                    let duration = 0.55;
-                    let num_samples = (sample_rate * duration) as usize;
-                    let mut data = Vec::with_capacity(num_samples);
-                    for i in 0..num_samples {
-                        let t = i as f64 / sample_rate;
-                        let env = (-3.0 * t).exp();
-
-                        let sample = if t < 0.15 {
-                            let fc = 523.25; // C5
-                            let fm = 261.6;
-                            let index = 3.0;
-                            (2.0 * std::f64::consts::PI * fc * t
-                                + index * (2.0 * std::f64::consts::PI * fm * t).sin())
-                            .sin()
-                        } else {
-                            let t2 = t - 0.15;
-                            let fc = 783.99; // G5
-                            let fm = 392.0;
-                            let index = 2.0;
-                            (2.0 * std::f64::consts::PI * fc * t2
-                                + index * (2.0 * std::f64::consts::PI * fm * t2).sin())
-                            .sin()
-                        };
-
-                        let byte_val = (127.5 + 127.0 * sample * env) as u8;
-                        data.push(byte_val);
-                    }
-                    data
-                }
-                SoundEffect::Failure => {
-                    let duration = 0.7;
-                    let num_samples = (sample_rate * duration) as usize;
-                    let mut data = Vec::with_capacity(num_samples);
-                    for i in 0..num_samples {
-                        let t = i as f64 / sample_rate;
-                        let env = (-2.0 * t).exp();
-                        let fc = 200.0 - 120.0 * (t / duration);
-                        let fm = 55.0;
-                        let index = 12.0 * (1.0 - t / duration);
-
-                        let sample = (2.0 * std::f64::consts::PI * fc * t
-                            + index * (2.0 * std::f64::consts::PI * fm * t).sin())
-                        .sin();
-                        let byte_val = (127.5 + 127.0 * sample * env) as u8;
-                        data.push(byte_val);
-                    }
-                    data
-                }
-                SoundEffect::Connect => {
-                    let duration = 0.18;
-                    let num_samples = (sample_rate * duration) as usize;
-                    let mut data = Vec::with_capacity(num_samples);
-                    for i in 0..num_samples {
-                        let t = i as f64 / sample_rate;
-                        let env = (-4.0 * t).exp();
-                        let fc = 600.0 + 800.0 * (t / duration);
-                        let fm = 150.0;
-                        let index = 2.0;
-                        let sample = (2.0 * std::f64::consts::PI * fc * t
-                            + index * (2.0 * std::f64::consts::PI * fm * t).sin())
-                        .sin();
-                        let byte_val = (127.5 + 127.0 * sample * env) as u8;
-                        data.push(byte_val);
-                    }
-                    data
-                }
+                SoundEffect::Boot => render_sequence(
+                    sample_rate,
+                    &[
+                        (329.63, 0.09, 0.015),
+                        (493.88, 0.11, 0.015),
+                        (659.25, 0.16, 0.0),
+                    ],
+                    0.28,
+                ),
+                SoundEffect::Success => render_sequence(
+                    sample_rate,
+                    &[(523.25, 0.085, 0.018), (659.25, 0.12, 0.0)],
+                    0.24,
+                ),
+                SoundEffect::Failure => render_sequence(
+                    sample_rate,
+                    &[(261.63, 0.12, 0.02), (196.00, 0.16, 0.0)],
+                    0.22,
+                ),
+                SoundEffect::Connect => render_sequence(sample_rate, &[(587.33, 0.075, 0.0)], 0.2),
                 SoundEffect::Disconnect => {
-                    let duration = 0.22;
-                    let num_samples = (sample_rate * duration) as usize;
-                    let mut data = Vec::with_capacity(num_samples);
-                    for i in 0..num_samples {
-                        let t = i as f64 / sample_rate;
-                        let env = (-3.0 * t).exp();
-                        let fc = 1200.0 - 700.0 * (t / duration);
-                        let fm = 100.0;
-                        let index = 4.0;
-                        let sample = (2.0 * std::f64::consts::PI * fc * t
-                            + index * (2.0 * std::f64::consts::PI * fm * t).sin())
-                        .sin();
-                        let byte_val = (127.5 + 127.0 * sample * env) as u8;
-                        data.push(byte_val);
-                    }
-                    data
+                    render_sequence(sample_rate, &[(392.00, 0.075, 0.0)], 0.18)
                 }
             };
 
             use std::io::Write;
             if let Ok(mut child) = std::process::Command::new("aplay")
-                .args(&["-t", "raw", "-r", "8000", "-f", "U8"])
+                .args(&["-t", "raw", "-r", "16000", "-f", "U8"])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -1572,17 +1792,28 @@ impl App {
                     self.channel_log(&port, msg);
                 }
 
-                // Check if all channels have finished
-                let all_finished = self
-                    .channels
-                    .iter()
-                    .all(|c| c.finished || c.status == "Idle");
-                if all_finished {
+                let mut completed_batch = None;
+                if let Some(batch) = self.active_flash_batch.as_mut() {
+                    if batch.target_ports.contains(&port)
+                        && batch.completed_ports.insert(port.clone())
+                    {
+                        if success {
+                            batch.passed += 1;
+                        } else {
+                            batch.failed += 1;
+                        }
+                    }
+                    if batch.completed_ports.len() >= batch.target_ports.len() {
+                        completed_batch = self.active_flash_batch.take();
+                    }
+                }
+
+                if let Some(batch) = completed_batch {
                     self.is_flashing = false;
-                    let total_secs = self.elapsed_time.as_secs_f32();
+                    let total_secs = batch.started_at.elapsed().as_secs_f32();
                     self.log(format!(
-                        "--- Batch Flashing Completed in {:.2}s. Passed: {}, Failed: {} ---",
-                        total_secs, self.stats.total_passed, self.stats.total_failed
+                        "--- Batch #{} Flashing Completed in {:.2}s. Passed: {}, Failed: {} ---",
+                        batch.id, total_secs, batch.passed, batch.failed
                     ));
                 }
             }
@@ -1700,33 +1931,79 @@ impl App {
                 );
                 self.play_sound(SoundEffect::Disconnect);
             }
+            WorkerMessage::PioBuildComplete { success, message } => {
+                self.pio_build_in_progress = false;
+                if success {
+                    self.log(format!("✅ {}", message));
+                    // Reload config from platformio.ini to pick up newly-built firmware
+                    if !self.config.platformio_project_dir.is_empty() {
+                        let project_dir = std::path::Path::new(&self.config.platformio_project_dir);
+                        let pio_ini = project_dir.join("platformio.ini");
+                        if pio_ini.exists() {
+                            let project_dir_buf = project_dir.to_path_buf();
+                            match ProjectConfig::detect_platformio_config_from_ini(
+                                &pio_ini,
+                                &project_dir_buf,
+                                None,
+                            ) {
+                                Ok(new_cfg) => {
+                                    // Preserve fields that shouldn't be overwritten
+                                    let old_do_not_chg_bin = self.config.do_not_chg_bin;
+                                    let old_manifest_locked = self.config.manifest_locked;
+                                    self.config = new_cfg;
+                                    self.config.do_not_chg_bin = old_do_not_chg_bin;
+                                    self.config.manifest_locked = old_manifest_locked;
+                                    self.config.populate_default_images_if_empty(
+                                        std::path::Path::new("build"),
+                                    );
+                                    self.log("Config refreshed from PlatformIO build output.");
+                                    self.rebuild_config_field_map();
+                                    // Re-generate factory manifest
+                                    let factory_dir = std::path::Path::new("build");
+                                    let factory_flash_config = factory_dir.join("piopulse.toml");
+                                    if let Some(_) = create_factory_manifest_from_existing_artifacts(
+                                        Some(&self.config),
+                                        factory_dir,
+                                        &factory_flash_config,
+                                    ) {
+                                        self.log("Build manifest updated.");
+                                    }
+                                }
+                                Err(e) => {
+                                    self.log(format!("Config refresh failed: {}", e));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    self.log(format!("❌ Build failed: {}", message));
+                }
+            }
         }
     }
 
     #[allow(dead_code)]
-    pub fn add_widget(&mut self, widget: WidgetType) {
-        if self.dashboard_widgets.len() < 6 {
-            self.dashboard_widgets.push(widget);
-            self.selected_widget_idx = self.dashboard_widgets.len() - 1;
-            self.log(format!("Added {:?} widget to Page 4.", widget));
-        } else {
-            self.log("Maximum of 6 widgets allowed in workspace.");
-        }
+    pub fn add_widget(&mut self, _widget: WidgetType) {
+        self.dashboard_widgets.clear();
+        self.selected_widget_idx = 0;
+        self.is_adding_widget = false;
+        self.widget_search_input.clear();
+        self.add_menu_selected = 0;
+        self.log("Probe dashboard is fixed.");
     }
 
     #[allow(dead_code)]
     pub fn delete_selected_widget(&mut self) {
         if !self.dashboard_widgets.is_empty() {
-            let removed = self.dashboard_widgets.remove(self.selected_widget_idx);
-            self.log(format!("Removed {:?} widget from Page 4.", removed));
-            if self.selected_widget_idx >= self.dashboard_widgets.len()
-                && !self.dashboard_widgets.is_empty()
-            {
-                self.selected_widget_idx = self.dashboard_widgets.len() - 1;
-            }
+            self.dashboard_widgets.clear();
+            self.selected_widget_idx = 0;
+            self.log("Legacy dashboard modules cleared.");
         } else {
-            self.log("No widget selected. Press A to add a widget first.");
+            self.log("Probe dashboard has no removable modules.");
         }
+        self.is_adding_widget = false;
+        self.widget_search_input.clear();
+        self.add_menu_selected = 0;
     }
 
     pub fn unlock_admin(&mut self) {
@@ -2336,27 +2613,10 @@ impl App {
         }
 
         if self.active_tab == ActiveTab::Widgets && self.is_adding_widget {
-            let area = self.layout_zones.widget_add_modal;
-            if !self.is_inside_rect(col, row, area) {
-                self.is_adding_widget = false;
-                self.widget_search_input.clear();
-                self.add_menu_selected = 0;
-                return true;
-            }
-
-            let filtered_items = crate::ui::widgets::get_filtered_catalog_items(
-                &self.widget_search_input,
-                &self.tool_config.language,
-            );
-            let item_row = row.saturating_sub(area.y + 7) as usize;
-            let visible_items = area.height.saturating_sub(8) as usize;
-            if item_row < filtered_items.len().min(visible_items) {
-                self.add_menu_selected = item_row;
-                self.add_widget(filtered_items[item_row].2);
-                self.is_adding_widget = false;
-                self.widget_search_input.clear();
-                self.add_menu_selected = 0;
-            }
+            self.is_adding_widget = false;
+            self.widget_search_input.clear();
+            self.add_menu_selected = 0;
+            self.dashboard_widgets.clear();
             return true;
         }
 
@@ -2413,10 +2673,13 @@ impl App {
         if self.is_editing_config && !clicked_config_table {
             // Save current field
             if self.admin_mode {
-                self.config
-                    .set_field(self.selected_config_field, self.edit_buffer.clone());
-                let _ = self.config.save_to_file(&self.config_path);
-                self.log("Saved configuration.");
+                self.config.set_field(
+                    self.config_real_field_index(self.selected_config_field),
+                    self.edit_buffer.clone(),
+                );
+                if self.save_config("save configuration") {
+                    self.log("Saved configuration.");
+                }
             }
             self.is_editing_config = false;
         }
@@ -2471,6 +2734,18 @@ impl App {
             }
             if self.is_inside_rect(col, row, self.layout_zones.flash_manifest_status) {
                 self.toggle_manifest_lock();
+                return true;
+            }
+            if self.is_inside_rect(col, row, self.layout_zones.flash_auto_toggle) {
+                self.auto_flash = !self.auto_flash;
+                self.log(format!(
+                    "Auto-Flash mode: {}",
+                    if self.auto_flash {
+                        "ENABLED"
+                    } else {
+                        "DISABLED"
+                    }
+                ));
                 return true;
             }
 
@@ -2564,6 +2839,7 @@ impl App {
                         self.manifest_edit_input = res.offset.clone();
                         return true;
                     } else if relative_col >= 11 && rect.width.saturating_sub(relative_col) >= 32 {
+                        self.file_picker_target = FilePickerTarget::ManifestImage;
                         self.show_file_picker = true;
                         self.file_picker_image_label = res.label.clone();
                         self.file_picker_search_input.clear();
@@ -2590,24 +2866,31 @@ impl App {
         if clicked_config_table {
             let rect = self.layout_zones.config_table;
             let relative_row = row.saturating_sub(rect.y + 1) as usize;
-            if relative_row < PROJECT_CONFIG_FIELD_COUNT {
+            if relative_row < self.config_field_map.len() {
                 if self.admin_mode {
                     if self.is_editing_config {
                         if self.selected_config_field != relative_row {
                             // Save current field
-                            self.config
-                                .set_field(self.selected_config_field, self.edit_buffer.clone());
-                            let _ = self.config.save_to_file(&self.config_path);
-                            self.log("Saved configuration.");
+                            self.config.set_field(
+                                self.config_real_field_index(self.selected_config_field),
+                                self.edit_buffer.clone(),
+                            );
+                            if self.save_config("save configuration") {
+                                self.log("Saved configuration.");
+                            }
                             // Start editing new field
                             self.selected_config_field = relative_row;
-                            self.edit_buffer = self.config.get_field(relative_row);
+                            self.edit_buffer = self
+                                .config
+                                .get_field(self.config_real_field_index(relative_row));
                         }
                     } else {
                         if self.selected_config_field == relative_row {
                             // Clicked already selected field -> Start editing!
                             self.is_editing_config = true;
-                            self.edit_buffer = self.config.get_field(relative_row);
+                            self.edit_buffer = self
+                                .config
+                                .get_field(self.config_real_field_index(relative_row));
                         } else {
                             self.selected_config_field = relative_row;
                         }
@@ -2775,99 +3058,12 @@ impl App {
 
         if self.active_tab == ActiveTab::Widgets {
             if self.is_inside_rect(col, row, self.layout_zones.monitor_panel) {
-                if self.dashboard_widgets.is_empty() {
-                    if let Some(action) =
-                        empty_dashboard_action_at(self.layout_zones.monitor_panel, col, row)
-                    {
-                        if let Some(widget) = widget_for_empty_action(action) {
-                            self.add_widget(widget);
-                        } else {
-                            self.is_adding_widget = true;
-                            self.widget_search_input.clear();
-                            self.add_menu_selected = 0;
-                        }
-                    }
-                    return true;
-                }
-
-                let pane_layouts = crate::ui::widgets::get_pane_layouts(
-                    self.layout_zones.monitor_panel,
-                    self.dashboard_widgets.len(),
-                );
-                for (idx, &pane) in pane_layouts.iter().enumerate() {
-                    if self.is_inside_rect(col, row, pane) {
-                        self.selected_widget_idx = idx;
-
-                        let inner_y = pane.y + 1;
-                        let inner_x = pane.x + 1;
-
-                        match self.dashboard_widgets[idx] {
-                            WidgetType::Button => {
-                                if row == inner_y + 1 {
-                                    if col >= inner_x + 3 && col <= inner_x + 13 {
-                                        self.submit_serial_command("START");
-                                    } else if col >= inner_x + 16 && col <= inner_x + 25 {
-                                        self.submit_serial_command("STOP");
-                                    }
-                                } else if row == inner_y + 3 {
-                                    if col >= inner_x + 3 && col <= inner_x + 13 {
-                                        self.submit_serial_command("RESET");
-                                    } else if col >= inner_x + 16 && col <= inner_x + 25 {
-                                        self.submit_serial_command("PING");
-                                    }
-                                }
-                            }
-                            WidgetType::Toggle => {
-                                if row == inner_y + 1 {
-                                    self.motor_enabled = !self.motor_enabled;
-                                    self.log(format!(
-                                        "Motor output: {}",
-                                        if self.motor_enabled {
-                                            "ENABLED"
-                                        } else {
-                                            "DISABLED"
-                                        }
-                                    ));
-                                }
-                            }
-                            WidgetType::Delay => {
-                                if row == inner_y + 1 {
-                                    self.log("Delayed trigger activated.");
-                                }
-                            }
-                            WidgetType::Dial => {
-                                if row == inner_y + 3 || row == inner_y + 4 {
-                                    let start_x = inner_x + 6;
-                                    let end_x = inner_x + 27;
-                                    let c_clamped = col.clamp(start_x, end_x);
-                                    let pct = (c_clamped - start_x) as f64
-                                        / (end_x - start_x).max(1) as f64;
-                                    self.param_target_speed = (pct * 5000.0).clamp(0.0, 5000.0);
-                                }
-                            }
-                            WidgetType::Knob => {
-                                if row == inner_y + 4 {
-                                    let start_x = inner_x + 8;
-                                    let end_x = inner_x + 18;
-                                    let c_clamped = col.clamp(start_x, end_x);
-                                    let pct = (c_clamped - start_x) as f64 / 10.0;
-                                    self.param_knob = pct.clamp(0.0, 1.0);
-                                }
-                            }
-                            WidgetType::Slider => {
-                                if row == inner_y + 1 {
-                                    self.set_slider_param_from_col(0, inner_x, col);
-                                } else if row == inner_y + 3 {
-                                    self.set_slider_param_from_col(1, inner_x, col);
-                                } else if row == inner_y + 5 {
-                                    self.set_slider_param_from_col(2, inner_x, col);
-                                }
-                            }
-                            _ => {}
-                        }
-                        return true;
-                    }
-                }
+                self.dashboard_widgets.clear();
+                self.selected_widget_idx = 0;
+                self.is_adding_widget = false;
+                self.hover_dashboard_empty_action = None;
+                self.hover_widget_control = None;
+                return true;
             }
         }
 
@@ -2888,7 +3084,18 @@ impl App {
         }
     }
 
+    pub fn handle_mouse_drag(&mut self, col: u16, row: u16, button: crossterm::event::MouseButton) {
+        if self.active_tab == ActiveTab::Widgets {
+            let _ = (col, row, button);
+            self.dashboard_widgets.clear();
+            self.selected_widget_idx = 0;
+            self.is_adding_widget = false;
+        }
+        self.last_drag_pos = Some((col, row));
+    }
+
     pub fn handle_mouse_move(&mut self, col: u16, row: u16) {
+        self.last_drag_pos = Some((col, row));
         self.clear_hover_state();
 
         if self.show_port_menu {
@@ -2933,18 +3140,10 @@ impl App {
         }
 
         if self.active_tab == ActiveTab::Widgets && self.is_adding_widget {
-            let area = self.layout_zones.widget_add_modal;
-            if self.is_inside_rect(col, row, area) {
-                let filtered_items = crate::ui::widgets::get_filtered_catalog_items(
-                    &self.widget_search_input,
-                    &self.tool_config.language,
-                );
-                let item_row = row.saturating_sub(area.y + 7) as usize;
-                let visible_items = area.height.saturating_sub(8) as usize;
-                if item_row < filtered_items.len().min(visible_items) {
-                    self.add_menu_selected = item_row;
-                }
-            }
+            self.is_adding_widget = false;
+            self.widget_search_input.clear();
+            self.add_menu_selected = 0;
+            self.dashboard_widgets.clear();
             return;
         }
 
@@ -3007,28 +3206,11 @@ impl App {
                 }
             }
             ActiveTab::Widgets => {
-                if !self.is_inside_rect(col, row, self.layout_zones.monitor_panel) {
-                    return;
-                }
-
-                if self.dashboard_widgets.is_empty() {
-                    self.hover_dashboard_empty_action =
-                        empty_dashboard_action_at(self.layout_zones.monitor_panel, col, row);
-                    return;
-                }
-
-                let pane_layouts = crate::ui::widgets::get_pane_layouts(
-                    self.layout_zones.monitor_panel,
-                    self.dashboard_widgets.len(),
-                );
-                for (idx, &pane) in pane_layouts.iter().enumerate() {
-                    if self.is_inside_rect(col, row, pane) {
-                        self.selected_widget_idx = idx;
-                        self.hover_widget_control =
-                            widget_control_at(self.dashboard_widgets[idx], pane, col, row);
-                        return;
-                    }
-                }
+                self.dashboard_widgets.clear();
+                self.selected_widget_idx = 0;
+                self.is_adding_widget = false;
+                self.hover_dashboard_empty_action = None;
+                self.hover_widget_control = None;
             }
             _ => {}
         }
@@ -3048,6 +3230,13 @@ impl App {
     }
 
     pub fn handle_mouse_scroll(&mut self, up: bool, col: u16, row: u16) {
+        if self.active_tab == ActiveTab::Widgets {
+            self.dashboard_widgets.clear();
+            self.selected_widget_idx = 0;
+            self.is_adding_widget = false;
+            return;
+        }
+
         match self.active_tab {
             ActiveTab::Serial => {
                 if self.is_inside_rect(col, row, self.layout_zones.serial_quick_commands) {
@@ -3092,10 +3281,10 @@ impl App {
                         if self.selected_config_field > 0 {
                             self.selected_config_field -= 1;
                         } else {
-                            self.selected_config_field = PROJECT_CONFIG_FIELD_COUNT - 1;
+                            self.selected_config_field = self.config_field_map.len() - 1;
                         }
                     } else {
-                        if self.selected_config_field < PROJECT_CONFIG_FIELD_COUNT - 1 {
+                        if self.selected_config_field < self.config_field_map.len() - 1 {
                             self.selected_config_field += 1;
                         } else {
                             self.selected_config_field = 0;
@@ -3104,17 +3293,9 @@ impl App {
                 }
             }
             ActiveTab::Widgets => {
-                if self.dashboard_widgets.get(self.selected_widget_idx) == Some(&WidgetType::Cube) {
-                    if up {
-                        self.widget_focus = if self.widget_focus > 0 {
-                            self.widget_focus - 1
-                        } else {
-                            7
-                        };
-                    } else {
-                        self.widget_focus = (self.widget_focus + 1) % 8;
-                    }
-                }
+                self.dashboard_widgets.clear();
+                self.selected_widget_idx = 0;
+                self.is_adding_widget = false;
             }
         }
     }
@@ -3183,7 +3364,7 @@ impl App {
     pub fn toggle_manifest_lock(&mut self) {
         self.manifest_locked = !self.manifest_locked;
         self.config.manifest_locked = self.manifest_locked;
-        let _ = self.config.save_to_file(&self.config_path);
+        self.save_config("save manifest lock state");
         if self.manifest_locked {
             self.show_manifest_edit_modal = false;
             self.show_file_picker = false;
@@ -3211,8 +3392,9 @@ impl App {
 
         if self.config.clear_manifest_image(&label) {
             self.config.sync_images_to_flat_fields();
-            let _ = self.config.save_to_file(&self.config_path);
-            self.log(format!("Deleted manifest image '{}'.", label));
+            if self.save_config("save manifest image deletion") {
+                self.log(format!("Deleted manifest image '{}'.", label));
+            }
         }
 
         self.show_manifest_delete_confirm = false;
@@ -3253,7 +3435,7 @@ impl App {
         }
 
         self.config.sync_images_to_flat_fields();
-        let _ = self.config.save_to_file(&self.config_path);
+        self.save_config("save manifest edit");
         self.show_manifest_edit_modal = false;
     }
 
@@ -3341,12 +3523,6 @@ impl App {
     }
 
     pub fn select_file_picker_item(&mut self) {
-        if self.manifest_locked {
-            self.log("Firmware manifest is locked; unlock before selecting files.");
-            self.show_file_picker = false;
-            return;
-        }
-
         if self.file_picker_selected_idx >= self.file_picker_items.len() {
             return;
         }
@@ -3358,22 +3534,31 @@ impl App {
             self.file_picker_selected_idx = 0;
             self.refresh_file_picker_items();
         } else {
-            // Select file and close
-            let label = self.file_picker_image_label.clone();
-            let value = item.path.to_string_lossy().to_string();
+            match self.file_picker_target {
+                FilePickerTarget::ManifestImage => {
+                    if self.manifest_locked {
+                        self.log("Firmware manifest is locked; unlock before selecting files.");
+                        self.show_file_picker = false;
+                        return;
+                    }
+                    // Select file for firmware manifest
+                    let label = self.file_picker_image_label.clone();
+                    let value = item.path.to_string_lossy().to_string();
 
-            {
-                let img = self.config.ensure_manifest_image(&label);
-                img.path = value.clone();
-                img.required = !img.path.trim().is_empty();
+                    {
+                        let img = self.config.ensure_manifest_image(&label);
+                        img.path = value.clone();
+                        img.required = !img.path.trim().is_empty();
+                    }
+                    self.log(format!(
+                        "Updated manifest path for '{}' to {}",
+                        label, value
+                    ));
+
+                    self.config.sync_images_to_flat_fields();
+                    self.save_config("save selected manifest file");
+                }
             }
-            self.log(format!(
-                "Updated manifest path for '{}' to {}",
-                label, value
-            ));
-
-            self.config.sync_images_to_flat_fields();
-            let _ = self.config.save_to_file(&self.config_path);
             self.show_file_picker = false;
         }
     }
@@ -4342,6 +4527,59 @@ mod tests {
     }
 
     #[test]
+    fn test_flash_batch_completion_waits_for_target_ports() {
+        let mut app = App::new("test_piopulse.toml".to_string());
+        app.channels = ["COM1", "COM2", "COM3"]
+            .into_iter()
+            .map(|port| {
+                Channel::new(crate::worker::DetectedPort {
+                    name: port.to_string(),
+                    vid: None,
+                    pid: None,
+                    product: None,
+                    manufacturer: None,
+                })
+            })
+            .collect();
+        app.is_flashing = true;
+        app.active_flash_batch = Some(FlashBatch {
+            id: 7,
+            target_ports: ["COM1".to_string(), "COM2".to_string()]
+                .into_iter()
+                .collect(),
+            completed_ports: std::collections::HashSet::new(),
+            passed: 0,
+            failed: 0,
+            started_at: Instant::now(),
+        });
+
+        app.handle_worker_message(WorkerMessage::Finished {
+            port: "COM1".to_string(),
+            success: true,
+            error_msg: None,
+            mac: Some("AA:BB".to_string()),
+        });
+        assert!(app.is_flashing);
+        assert!(app.active_flash_batch.is_some());
+
+        app.handle_worker_message(WorkerMessage::Finished {
+            port: "COM2".to_string(),
+            success: false,
+            error_msg: Some("boom".to_string()),
+            mac: None,
+        });
+        assert!(!app.is_flashing);
+        assert!(app.active_flash_batch.is_none());
+        assert!(app.logs.iter().any(|line| {
+            line.contains("Batch #7 Flashing Completed")
+                && line.contains("Passed: 1")
+                && line.contains("Failed: 1")
+        }));
+
+        let _ = std::fs::remove_file("test_piopulse.toml");
+    }
+
+    #[test]
     fn test_flasher_manifest_table_click_and_edit() {
         let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -4390,6 +4628,51 @@ mod tests {
         assert_eq!(app.config.bootloader_path, "new_boot.bin"); // flat field synchronized!
 
         let _ = std::fs::remove_file("test_piopulse.toml");
+    }
+
+    #[test]
+    fn test_merged_manifest_file_selection_persists_to_project_config() {
+        let config_path = format!(
+            "piopulse_merged_manifest_{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let mut app = App::new(config_path.clone());
+        app.file_picker_target = FilePickerTarget::ManifestImage;
+        app.file_picker_image_label = "factory_merged".to_string();
+        app.file_picker_items = vec![crate::app::FilePickerItem {
+            name: "factory_merged.bin".to_string(),
+            path: std::path::PathBuf::from("factory_merged.bin"),
+            is_dir: false,
+            size_str: "128KB".to_string(),
+        }];
+        app.file_picker_selected_idx = 0;
+
+        app.select_file_picker_item();
+
+        assert!(app.config.use_merged_flash);
+        assert_eq!(app.config.merged_offset, "0x0000");
+        let merged = app
+            .config
+            .images
+            .iter()
+            .find(|img| img.label == "factory_merged")
+            .expect("missing merged manifest image");
+        assert_eq!(merged.path, "factory_merged.bin");
+        assert_eq!(merged.offset, "0x0000");
+
+        let loaded = ProjectConfig::load_from_file(&config_path).unwrap();
+        assert!(loaded.use_merged_flash);
+        assert_eq!(loaded.merged_offset, "0x0000");
+        assert!(loaded.images.iter().any(|img| {
+            img.label == "factory_merged"
+                && img.path.ends_with("factory_merged.bin")
+                && img.offset == "0x0000"
+        }));
+
+        let _ = std::fs::remove_file(config_path);
     }
 
     #[test]
@@ -4563,28 +4846,22 @@ mod tests {
     }
 
     #[test]
-    fn test_dashboard_empty_buttons_select_on_mouse_hover() {
+    fn test_probe_dashboard_does_not_hover_legacy_module_actions() {
         let mut app = App::new("test_piopulse.toml".to_string());
         app.active_tab = ActiveTab::Widgets;
         app.layout_zones.monitor_panel = ratatui::layout::Rect::new(10, 5, 90, 20);
 
         app.handle_mouse_move(30, 9);
-        assert_eq!(
-            app.hover_dashboard_empty_action,
-            Some(DashboardEmptyAction::Button)
-        );
+        assert_eq!(app.hover_dashboard_empty_action, None);
 
         app.handle_mouse_move(12, 14);
-        assert_eq!(
-            app.hover_dashboard_empty_action,
-            Some(DashboardEmptyAction::Slider)
-        );
+        assert_eq!(app.hover_dashboard_empty_action, None);
 
         let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
-    fn test_dashboard_empty_compact_mode_does_not_add_from_blank_space() {
+    fn test_probe_dashboard_does_not_add_legacy_modules_from_mouse_click() {
         let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Widgets;
@@ -4592,31 +4869,27 @@ mod tests {
 
         assert!(app.handle_mouse_click(4, 9, tx));
         assert!(app.dashboard_widgets.is_empty());
+        assert!(!app.is_adding_widget);
 
         let _ = std::fs::remove_file("test_piopulse.toml");
     }
 
     #[test]
-    fn test_slider_click_uses_visual_track_columns() {
+    fn test_probe_dashboard_ignores_legacy_slider_controls() {
         let mut app = App::new("test_piopulse.toml".to_string());
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         app.active_tab = ActiveTab::Widgets;
         app.layout_zones.monitor_panel = ratatui::layout::Rect::new(10, 5, 80, 20);
         app.dashboard_widgets = vec![WidgetType::Slider];
+        app.param_kp = 1.5;
+        app.param_ki = 0.1;
+        app.param_kd = 0.15;
 
-        let pane = crate::ui::widgets::get_pane_layouts(app.layout_zones.monitor_panel, 1)[0];
-        let inner_x = pane.x + 1;
-        let inner_y = pane.y + 1;
-        let track_start = inner_x + PARAM_SLIDER_LABEL_WIDTH;
-
-        assert!(app.handle_mouse_click(track_start, inner_y + 1, tx.clone()));
-        assert_eq!(app.param_kp, 0.0);
-
-        assert!(app.handle_mouse_click(track_start + 5, inner_y + 1, tx.clone()));
-        assert!((app.param_kp - (5.0 / 9.0 * 3.0)).abs() < f64::EPSILON);
-
-        assert!(app.handle_mouse_click(track_start + PARAM_SLIDER_LAST_OFFSET, inner_y + 1, tx));
-        assert_eq!(app.param_kp, 3.0);
+        assert!(app.handle_mouse_click(20, 8, tx));
+        assert!(app.dashboard_widgets.is_empty());
+        assert_eq!(app.param_kp, 1.5);
+        assert_eq!(app.param_ki, 0.1);
+        assert_eq!(app.param_kd, 0.15);
 
         let _ = std::fs::remove_file("test_piopulse.toml");
     }

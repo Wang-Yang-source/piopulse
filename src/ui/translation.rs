@@ -147,16 +147,16 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
         }
         "add_module" => {
             if is_zh {
-                "：添加模块 | "
+                "：probe-rs 仪表盘 | "
             } else {
-                ": Add Module | "
+                ": probe-rs Dashboard | "
             }
         }
         "delete_module" => {
             if is_zh {
-                "：删除模块 | "
+                "：调试视图固定 | "
             } else {
-                ": Delete Module | "
+                ": Fixed Debug View | "
             }
         }
         "clear_stats" => {
@@ -1142,6 +1142,48 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
                 "Do Not Chg Bin:"
             }
         }
+        "config_framework" => {
+            if is_zh {
+                "框架:"
+            } else {
+                "Framework:"
+            }
+        }
+        "config_upload_protocol" => {
+            if is_zh {
+                "上传协议:"
+            } else {
+                "Upload Protocol:"
+            }
+        }
+        "config_debug_tool" => {
+            if is_zh {
+                "调试工具:"
+            } else {
+                "Debug Tool:"
+            }
+        }
+        "desc_Framework" => {
+            if is_zh {
+                "PlatformIO 框架类型 (arduino/espidf/zephyr/stm32cube)"
+            } else {
+                "PlatformIO framework (arduino/espidf/zephyr/stm32cube)"
+            }
+        }
+        "desc_Upload Protocol" => {
+            if is_zh {
+                "固件上传协议 (stlink/esptool/jlink/cmsis-dap)"
+            } else {
+                "Firmware upload protocol (stlink/esptool/jlink/cmsis-dap)"
+            }
+        }
+        "desc_Debug Tool" => {
+            if is_zh {
+                "调试探针类型 (stlink/jlink/cmsis-dap)"
+            } else {
+                "Debug probe type (stlink/jlink/cmsis-dap)"
+            }
+        }
         "config_inspector_title" => {
             if is_zh {
                 " 检查器 "
@@ -1281,16 +1323,16 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
         }
         "dash_press_a" => {
             if is_zh {
-                "     按 [A] "
+                "     第三页 "
             } else {
-                "     Press [A] "
+                "     Page 3 "
             }
         }
         "dash_open_catalog" => {
             if is_zh {
-                "打开 Ratatui 模块目录并添加组件。"
+                "使用固定 probe-rs 仪表盘。"
             } else {
-                "to open the Ratatui module catalog and add items."
+                "uses the fixed probe-rs dashboard."
             }
         }
         "dash_press_d" => {
@@ -1333,142 +1375,6 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
                 " 平铺工作区 "
             } else {
                 " Tiling Workspace "
-            }
-        }
-
-        "dash_select_module_title" => {
-            if is_zh {
-                "选择要添加到分屏的 Ratatui 模块"
-            } else {
-                "Select Ratatui Module to Add to Pane"
-            }
-        }
-        "dash_search" => {
-            if is_zh {
-                " 搜索: "
-            } else {
-                " Search: "
-            }
-        }
-        "dash_modal_hint" => {
-            if is_zh {
-                " 按 [↑/↓] 导航 | [ENTER] 添加 | [ESC] 关闭"
-            } else {
-                " Press [↑/↓] to navigate | [ENTER] to add | [ESC] to close"
-            }
-        }
-        "dash_catalog_title" => {
-            if is_zh {
-                " Ratatui 模块目录 "
-            } else {
-                " Ratatui Module Catalog "
-            }
-        }
-
-        // Widget Catalog Item Descriptions
-        "widget_button_desc" => {
-            if is_zh {
-                "Ratatui TUI 按钮面板"
-            } else {
-                "Ratatui TUI Button Panel"
-            }
-        }
-        "widget_cube_desc" => {
-            if is_zh {
-                "Ratatui 画布 3D 旋转立方体"
-            } else {
-                "Ratatui Canvas Orientation Cube"
-            }
-        }
-        "widget_dashboard_desc" => {
-            if is_zh {
-                "Ratatui TUI 系统仪表盘"
-            } else {
-                "Ratatui TUI System Dashboard"
-            }
-        }
-        "widget_delay_desc" => {
-            if is_zh {
-                "Ratatui TUI 延时触发器"
-            } else {
-                "Ratatui TUI Delayed Trigger"
-            }
-        }
-        "widget_dial_desc" => {
-            if is_zh {
-                "Ratatui TUI 刻度盘面板"
-            } else {
-                "Ratatui TUI Dial Panel"
-            }
-        }
-        "widget_example_desc" => {
-            if is_zh {
-                "Rust/Ratatui 模块示例模板"
-            } else {
-                "Example Rust/Ratatui Module Template"
-            }
-        }
-        "widget_gauge_desc" => {
-            if is_zh {
-                "Ratatui 进度条/遥测仪表"
-            } else {
-                "Ratatui Gauge Telemetry Meter"
-            }
-        }
-        "widget_image_desc" => {
-            if is_zh {
-                "Ratatui 画布 图像/感兴趣区域预览"
-            } else {
-                "Ratatui Canvas Image/ROI Preview"
-            }
-        }
-        "widget_joystick_desc" => {
-            if is_zh {
-                "Ratatui 画布 摇杆网格"
-            } else {
-                "Ratatui Canvas Joystick Grid"
-            }
-        }
-        "widget_knob_desc" => {
-            if is_zh {
-                "Ratatui TUI 精准旋钮"
-            } else {
-                "Ratatui TUI Precision Knob"
-            }
-        }
-        "widget_light_desc" => {
-            if is_zh {
-                "Ratatui TUI 状态指示灯"
-            } else {
-                "Ratatui TUI Status Lights"
-            }
-        }
-        "widget_pad_desc" => {
-            if is_zh {
-                "Ratatui 画布 双轴触摸板"
-            } else {
-                "Ratatui Canvas Dual-Axis Pad"
-            }
-        }
-        "widget_ring_desc" => {
-            if is_zh {
-                "Ratatui TUI 环形仪表盘"
-            } else {
-                "Ratatui TUI Ring Dial"
-            }
-        }
-        "widget_slider_desc" => {
-            if is_zh {
-                "Ratatui TUI 参数滑块"
-            } else {
-                "Ratatui TUI Parameter Slider"
-            }
-        }
-        "widget_toggle_desc" => {
-            if is_zh {
-                "Ratatui TUI 锁存开关"
-            } else {
-                "Ratatui TUI Latched Switch"
             }
         }
 
@@ -1517,9 +1423,9 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
         }
         "widget_example_title" => {
             if is_zh {
-                "示例：Rust/Ratatui 模块模板"
+                "示例：已停用的旧组件"
             } else {
-                "example: Rust/Ratatui Module Template"
+                "example: disabled legacy component"
             }
         }
         "widget_gauge_title" => {
@@ -1573,9 +1479,9 @@ pub fn tr<'a>(key: &'a str, lang: &str) -> &'a str {
         }
         "widget_slider_title" => {
             if is_zh {
-                "滑块：Ratatui PID 参数面板"
+                "probe-rs：参数面板已停用"
             } else {
-                "slider: Ratatui PID Parameter Panel"
+                "probe-rs: parameter panel disabled"
             }
         }
         "widget_toggle_title" => {

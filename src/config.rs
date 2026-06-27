@@ -2,9 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-pub const PROJECT_CONFIG_FIELD_COUNT: usize = 30;
+pub const PROJECT_CONFIG_FIELD_COUNT: usize = 33;
 pub const MANIFEST_SLOT_COUNT: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -57,6 +56,12 @@ pub struct ProjectConfig {
     pub images: Vec<FirmwareImage>,
     pub use_merged_flash: bool,
     pub manifest_locked: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub framework: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub upload_protocol: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub debug_tool: String,
     #[serde(skip)]
     pub platformio_project_dir: String,
     #[serde(skip)]
@@ -101,6 +106,9 @@ impl Default for ProjectConfig {
             images: Vec::new(),
             use_merged_flash: false,
             manifest_locked: false,
+            framework: String::new(),
+            upload_protocol: String::new(),
+            debug_tool: String::new(),
             platformio_project_dir: String::new(),
             factory_dir: String::new(),
         }
@@ -108,6 +116,34 @@ impl Default for ProjectConfig {
 }
 
 impl ProjectConfig {
+    pub fn fill_missing_tool_defaults(&mut self) -> bool {
+        let mut changed = false;
+        let chip_lower = self.chip_type.to_lowercase();
+        let framework_lower = self.framework.to_lowercase();
+        let is_esp = chip_lower.contains("esp")
+            || framework_lower.contains("espidf")
+            || framework_lower.contains("arduino")
+            || !self.bootloader_path.trim().is_empty();
+
+        if self.upload_protocol.trim().is_empty() {
+            self.upload_protocol = if is_esp {
+                "esptool".to_string()
+            } else if !self.debug_tool.trim().is_empty() {
+                self.debug_tool.clone()
+            } else {
+                "default".to_string()
+            };
+            changed = true;
+        }
+
+        if self.debug_tool.trim().is_empty() {
+            self.debug_tool = "probe-rs".to_string();
+            changed = true;
+        }
+
+        changed
+    }
+
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let is_toml = path
             .as_ref()
@@ -130,6 +166,7 @@ impl ProjectConfig {
         let base_dir = path.as_ref().parent().unwrap_or_else(|| Path::new(""));
         cfg.resolve_relative_paths(base_dir);
         cfg.populate_default_images_if_empty(base_dir);
+        cfg.fill_missing_tool_defaults();
 
         Ok(cfg)
     }
@@ -146,16 +183,48 @@ impl ProjectConfig {
                 path.as_ref().display()
             ));
         }
+        let path = path.as_ref();
         let contents = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
-        if let Some(parent) = path.as_ref().parent() {
+        if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent)
                     .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
             }
         }
-        let mut file = File::create(path).map_err(|e| e.to_string())?;
+
+        let parent = path.parent().unwrap_or_else(|| Path::new(""));
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("Invalid config file path: {}", path.display()))?;
+        let temp_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let temp_path = parent.join(format!(
+            ".{}.{}.{}.tmp",
+            file_name,
+            std::process::id(),
+            temp_suffix
+        ));
+
+        let mut file = File::create(&temp_path)
+            .map_err(|e| format!("Failed to create {}: {}", temp_path.display(), e))?;
         file.write_all(contents.as_bytes())
-            .map_err(|e| e.to_string())
+            .map_err(|e| format!("Failed to write {}: {}", temp_path.display(), e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync {}: {}", temp_path.display(), e))?;
+        drop(file);
+
+        fs::rename(&temp_path, path).map_err(|e| {
+            let _ = fs::remove_file(&temp_path);
+            format!(
+                "Failed to replace {} with {}: {}",
+                path.display(),
+                temp_path.display(),
+                e
+            )
+        })
     }
 
     pub fn detect_platformio_config() -> Option<Self> {
@@ -206,11 +275,17 @@ impl ProjectConfig {
         copy_source_tree_for_platformio(source_dir, &build_root)?;
         copy_platformio_referenced_assets(source_dir, pio_ini_path, &build_root)?;
 
-        Self::detect_platformio_config_from_ini(
+        let mut config = Self::detect_platformio_config_from_ini(
             &build_root.join("platformio.ini"),
             &build_root,
             Some(source_dir.join("build")),
-        )
+        )?;
+        config.name = source_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("PlatformIO Project")
+            .to_string();
+        Ok(config)
     }
 
     pub fn detect_platformio_config_from_ini<P: AsRef<Path>>(
@@ -285,13 +360,26 @@ impl ProjectConfig {
         let flash_size = get_env_value("board_upload.flash_size");
         let custom_bootloader = get_env_value("board_build.arduino.custom_bootloader");
         let variants_dir = get_env_value("board_build.variants_dir");
+        let framework = get_env_value("framework").unwrap_or_default();
+        let upload_protocol = get_env_value("upload_protocol").unwrap_or_default();
+        let debug_tool = get_env_value("debug_tool").unwrap_or_default();
+        let monitor_speed_val = get_env_value("monitor_speed");
         let board = board.unwrap_or_default();
         let board_manifest = read_platformio_board_manifest(&board);
 
         let chip_type = chip_type_from_board(&board, board_manifest.as_ref());
 
+        let is_zephyr = framework.to_lowercase().contains("zephyr");
+        let is_stm32cube = framework.to_lowercase().contains("stm32cube");
+        let is_rtos_framework = is_zephyr || is_stm32cube;
+
         let baud_rate = upload_speed
             .and_then(|s| s.parse::<u32>().ok())
+            .or_else(|| {
+                monitor_speed_val
+                    .as_deref()
+                    .and_then(|s| s.parse::<u32>().ok())
+            })
             .or_else(|| board_manifest_upload_speed(board_manifest.as_ref()))
             .unwrap_or(921600);
 
@@ -336,6 +424,20 @@ impl ProjectConfig {
         };
         let app_path = if is_esp_platformio_env {
             build_dir.join("firmware.bin").to_string_lossy().to_string()
+        } else if is_rtos_framework {
+            // Zephyr/STM32Cube: prefer .elf for probe-rs, fall back to .bin/.hex
+            let elf = build_dir.join("firmware.elf");
+            let bin = build_dir.join("firmware.bin");
+            let hex = build_dir.join("firmware.hex");
+            if elf.exists() {
+                elf.to_string_lossy().to_string()
+            } else if bin.exists() {
+                bin.to_string_lossy().to_string()
+            } else if hex.exists() {
+                hex.to_string_lossy().to_string()
+            } else {
+                elf.to_string_lossy().to_string() // default to .elf
+            }
         } else {
             build_dir.join("program").to_string_lossy().to_string()
         };
@@ -398,6 +500,9 @@ impl ProjectConfig {
             } else {
                 String::new()
             },
+            framework: framework.clone(),
+            upload_protocol: upload_protocol.clone(),
+            debug_tool: debug_tool.clone(),
             ..ProjectConfig::default()
         };
         if !is_esp_platformio_env {
@@ -412,6 +517,7 @@ impl ProjectConfig {
             .unwrap_or_else(|| project_dir.join("build"))
             .to_string_lossy()
             .to_string();
+        config.fill_missing_tool_defaults();
 
         Ok(config)
     }
@@ -466,20 +572,7 @@ impl ProjectConfig {
         };
 
         if needs_build {
-            let output = Command::new("pio")
-                .arg("run")
-                .current_dir(&project_dir)
-                .output()
-                .map_err(|e| format!("Failed to run PlatformIO build: {}", e))?;
-
-            if !output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!(
-                    "PlatformIO build failed with status {}.\n{}\n{}",
-                    output.status, stdout, stderr
-                ));
-            }
+            return Err("PlatformIO build artifacts (binaries) are missing. Please build the PlatformIO project first (e.g. run `pio run` in the project directory) to generate the flashing manifest.".to_string());
         }
 
         if !is_esp_package {
@@ -660,6 +753,9 @@ impl ProjectConfig {
             27 => self.label_template.clone(),
             28 => self.qa_test_script.clone(),
             29 => self.do_not_chg_bin.to_string(),
+            30 => self.framework.clone(),
+            31 => self.upload_protocol.clone(),
+            32 => self.debug_tool.clone(),
             _ => String::new(),
         }
     }
@@ -703,6 +799,9 @@ impl ProjectConfig {
             27 => self.label_template = value,
             28 => self.qa_test_script = value,
             29 => self.do_not_chg_bin = parse_bool_field(&value, self.do_not_chg_bin),
+            30 => self.framework = value,
+            31 => self.upload_protocol = value,
+            32 => self.debug_tool = value,
             _ => {}
         }
         self.sync_flat_fields_to_images();
@@ -966,6 +1065,20 @@ impl ProjectConfig {
                     error: None,
                 });
             }
+        } else if filtered_results.is_empty() {
+            filtered_results.push(ImageValidationResult {
+                label: "factory_merged".to_string(),
+                offset: if self.merged_offset.trim().is_empty() {
+                    "0x0000".to_string()
+                } else {
+                    self.merged_offset.clone()
+                },
+                path: String::new(),
+                size_bytes: None,
+                exists: false,
+                sha256_match: None,
+                error: None,
+            });
         }
 
         filtered_results
@@ -976,10 +1089,21 @@ impl ProjectConfig {
             return &mut self.images[pos];
         }
 
+        let default_offset = match label {
+            "factory_merged" | "merged" => {
+                if self.merged_offset.trim().is_empty() {
+                    "0x0000"
+                } else {
+                    self.merged_offset.as_str()
+                }
+            }
+            _ => "",
+        };
+
         self.images.push(FirmwareImage {
             label: label.to_string(),
             path: String::new(),
-            offset: String::new(),
+            offset: default_offset.to_string(),
             required: false,
             encrypted: false,
             sha256: None,
@@ -1099,6 +1223,12 @@ impl ProjectConfig {
                 "firmware" => {
                     self.app_path = img.path.clone();
                     self.app_offset = img.offset.clone();
+                }
+                "factory_merged" | "merged" => {
+                    self.merged_offset = img.offset.clone();
+                    if !img.path.trim().is_empty() {
+                        self.use_merged_flash = true;
+                    }
                 }
                 _ => {}
             }
@@ -1763,6 +1893,79 @@ required = true
     }
 
     #[test]
+    fn test_project_config_save_to_file_is_reloadable_and_cleans_temp_file() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "piopulse_atomic_save_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("piopulse.toml");
+        std::fs::write(&config_path, "name = \"old\"\n").unwrap();
+
+        let mut config = ProjectConfig::default();
+        config.name = "Saved Config".to_string();
+        config.chip_type = "ESP32-C3".to_string();
+        config.save_to_file(&config_path).unwrap();
+
+        let loaded = ProjectConfig::load_from_file(&config_path).unwrap();
+        assert_eq!(loaded.name, "Saved Config");
+        assert_eq!(loaded.chip_type, "ESP32-C3");
+
+        let temp_files: Vec<_> = std::fs::read_dir(&temp_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".piopulse.toml.")
+            })
+            .collect();
+        assert!(temp_files.is_empty());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_project_config_fills_and_saves_missing_platformio_tool_defaults() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "piopulse_tool_defaults_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let config_path = temp_dir.join("piopulse.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+name = "PixelPad"
+chip_type = "ESP32-S3"
+framework = "arduino"
+upload_protocol = ""
+debug_tool = ""
+baud_rate = 921600
+"#,
+        )
+        .unwrap();
+
+        let config = ProjectConfig::load_from_file(&config_path).unwrap();
+        assert_eq!(config.upload_protocol, "esptool");
+        assert_eq!(config.debug_tool, "probe-rs");
+
+        config.save_to_file(&config_path).unwrap();
+        let saved = std::fs::read_to_string(&config_path).unwrap();
+        assert!(saved.contains("upload_protocol = \"esptool\""));
+        assert!(saved.contains("debug_tool = \"probe-rs\""));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn test_materialize_platformio_factory_package_from_build_outputs() {
         let temp_dir = std::env::temp_dir().join(format!(
             "piopulse_factory_package_test_{}",
@@ -2055,6 +2258,18 @@ board_build.arduino.custom_bootloader = bootloader_dio_80m.bin
         assert_eq!(results.len(), 1);
         assert!(errors.is_empty());
         assert_eq!(results[0].label, "slot_1");
+    }
+
+    #[test]
+    fn test_merged_manifest_mode_exposes_empty_editable_slot() {
+        let config = ProjectConfig::default();
+        let results = config.manifest_results_for_mode(true);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].label, "factory_merged");
+        assert_eq!(results[0].offset, "0x0000");
+        assert_eq!(results[0].path, "");
+        assert!(results[0].error.is_none());
     }
 
     #[test]

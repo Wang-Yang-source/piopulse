@@ -1,9 +1,7 @@
 pub mod cube;
 pub mod image;
 
-use crate::app::{
-    App, DashboardEmptyAction, PARAM_SLIDER_LAST_OFFSET, PARAM_SLIDER_TRACK_WIDTH, WidgetType,
-};
+use crate::app::{App, PARAM_SLIDER_LAST_OFFSET, PARAM_SLIDER_TRACK_WIDTH};
 use crate::ui::theme::{CATPPUCCIN_MOCHA, mocha};
 use ratatui::{
     Frame,
@@ -11,284 +9,630 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::canvas::{Canvas, Line as CanvasLine},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
 };
 
-pub fn get_catalog_items() -> Vec<(&'static str, &'static str, WidgetType)> {
-    vec![
-        ("button", "widget_button_desc", WidgetType::Button),
-        ("cube", "widget_cube_desc", WidgetType::Cube),
-        ("dashboard", "widget_dashboard_desc", WidgetType::Dashboard),
-        ("delay", "widget_delay_desc", WidgetType::Delay),
-        ("dial", "widget_dial_desc", WidgetType::Dial),
-        ("example", "widget_example_desc", WidgetType::Example),
-        ("gauge", "widget_gauge_desc", WidgetType::Gauge),
-        ("image", "widget_image_desc", WidgetType::Image),
-        ("joystick", "widget_joystick_desc", WidgetType::Joystick),
-        ("knob", "widget_knob_desc", WidgetType::Knob),
-        ("light", "widget_light_desc", WidgetType::Light),
-        ("pad", "widget_pad_desc", WidgetType::Pad),
-        ("ring", "widget_ring_desc", WidgetType::Ring),
-        ("slider", "widget_slider_desc", WidgetType::Slider),
-        ("toggle", "widget_toggle_desc", WidgetType::Toggle),
-    ]
-}
-
-pub fn get_filtered_catalog_items(
-    search: &str,
-    _lang: &str,
-) -> Vec<(&'static str, &'static str, WidgetType)> {
-    let search = search.to_lowercase();
-    let mut items: Vec<_> = get_catalog_items()
-        .into_iter()
-        .filter(|(name, desc_key, _)| {
-            name.contains(&search)
-                || crate::ui::tr(desc_key, "en")
-                    .to_lowercase()
-                    .contains(&search)
-                || crate::ui::tr(desc_key, "zh").contains(&search)
-        })
-        .collect();
-    // Keep the module catalog stable as new modules are added.
-    items.sort_by_key(|(name, _, _)| *name);
-    items
-}
-
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
-    if app.dashboard_widgets.is_empty() {
-        draw_welcome_screen(f, app, area);
-    } else {
-        // Draw split panes based on tiled count
-        let count = app.dashboard_widgets.len();
-        let pane_layouts = get_pane_layouts(area, count);
-
-        for (idx, &widget_type) in app.dashboard_widgets.iter().enumerate() {
-            let pane_area = pane_layouts[idx];
-            let is_focused = app.selected_widget_idx == idx;
-
-            match widget_type {
-                WidgetType::Cube => cube::draw(f, app, pane_area, is_focused),
-                WidgetType::Image => image::draw(f, app, pane_area, is_focused),
-                WidgetType::Button => draw_button_widget(f, app, pane_area, is_focused),
-                WidgetType::Slider => draw_slider_widget(f, app, pane_area, is_focused),
-                WidgetType::Dial => draw_dial_widget(f, app, pane_area, is_focused),
-                WidgetType::Joystick => draw_joystick_widget(f, app, pane_area, is_focused),
-                WidgetType::Light => draw_light_widget(f, app, pane_area, is_focused),
-                WidgetType::Gauge => draw_gauge_widget(f, app, pane_area, is_focused),
-                WidgetType::Dashboard => draw_dashboard_widget(f, app, pane_area, is_focused),
-                WidgetType::Example => draw_example_widget(f, app, pane_area, is_focused),
-                WidgetType::Delay => draw_delay_widget(f, app, pane_area, is_focused),
-                WidgetType::Toggle => draw_toggle_widget(f, app, pane_area, is_focused),
-                WidgetType::Knob => draw_knob_widget(f, app, pane_area, is_focused),
-                WidgetType::Ring => draw_ring_widget(f, app, pane_area, is_focused),
-                WidgetType::Pad => draw_pad_widget(f, app, pane_area, is_focused),
-            }
-        }
-    }
-
-    // Centered popup modal to add widget
-    if app.is_adding_widget {
-        let modal_height = area.height.saturating_sub(2).clamp(8, 20);
-        let modal_width_pct = if area.width < 78 { 94 } else { 65 };
-        let modal_area = center_rect(modal_width_pct, modal_height, area);
-        app.layout_zones.widget_add_modal = modal_area;
-        draw_add_widget_modal(f, app, modal_area);
-    }
+    draw_probe_dashboard(f, app, area);
 }
 
-fn draw_welcome_screen(f: &mut Frame, app: &App, area: Rect) {
+fn draw_probe_dashboard(f: &mut Frame, app: &App, area: Rect) {
     let lang = &app.tool_config.language;
-    let selected_port = app.get_selected_port().unwrap_or_else(|| {
+    let probe_channels: Vec<_> = app
+        .channels
+        .iter()
+        .filter(|channel| channel.port.starts_with("probe:"))
+        .collect();
+    let serial_channels: Vec<_> = app
+        .channels
+        .iter()
+        .filter(|channel| !channel.port.starts_with("probe:"))
+        .collect();
+    let selected_probe = app
+        .channels
+        .get(app.selected_channel_idx)
+        .filter(|channel| channel.port.starts_with("probe:"))
+        .or_else(|| probe_channels.first().copied());
+    let selected_serial = app
+        .channels
+        .get(app.selected_channel_idx)
+        .filter(|channel| !channel.port.starts_with("probe:"))
+        .or_else(|| serial_channels.first().copied());
+    let selected_probe_name = selected_probe
+        .map(|channel| short_probe_name(&channel.port))
+        .or_else(|| {
+            selected_serial.map(|_| {
+                if lang == "zh" {
+                    "串口已连接".to_string()
+                } else {
+                    "serial connected".to_string()
+                }
+            })
+        })
+        .unwrap_or_else(|| {
+            if lang == "zh" {
+                "未发现探针"
+            } else {
+                "no probe"
+            }
+            .to_string()
+        });
+    let selected_probe_detail = selected_probe
+        .map(|channel| {
+            format!(
+                "{} {}",
+                channel.usb_product.as_deref().unwrap_or("probe-rs"),
+                channel.usb_manufacturer.as_deref().unwrap_or("debug probe")
+            )
+        })
+        .or_else(|| {
+            selected_serial.map(|channel| {
+                if lang == "zh" {
+                    format!("{}；非 probe-rs 调试探针", serial_device_label(channel))
+                } else {
+                    format!(
+                        "{}; not a probe-rs debug probe",
+                        serial_device_label(channel)
+                    )
+                }
+            })
+        })
+        .unwrap_or_else(|| {
+            if lang == "zh" {
+                "未发现串口或调试探针".to_string()
+            } else {
+                "no serial device or debug probe found".to_string()
+            }
+        });
+    let target_status = selected_probe
+        .map(|channel| channel.status.as_str())
+        .unwrap_or_else(|| {
+            if selected_serial.is_some() {
+                if lang == "zh" {
+                    "串口连接；调试未 attach"
+                } else {
+                    "serial only; debug detached"
+                }
+            } else if lang == "zh" {
+                "未连接"
+            } else {
+                "detached"
+            }
+        });
+    let target_name = selected_probe
+        .or(selected_serial)
+        .and_then(|channel| channel.chip.as_deref())
+        .unwrap_or(app.config.chip_type.as_str());
+    let firmware_path = probe_firmware_label(app);
+    let firmware_size = std::fs::metadata(&firmware_path)
+        .map(|metadata| format_bytes(metadata.len() as usize))
+        .unwrap_or_else(|_| if lang == "zh" { "未找到" } else { "missing" }.to_string());
+
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Min(12),
+            Constraint::Length(5),
+        ])
+        .split(area);
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
+        .split(outer[0]);
+    let body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(outer[1]);
+    let body_top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
+        .split(body[0]);
+    let body_bottom = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
+        .split(body[1]);
+
+    draw_metric_panel(
+        f,
+        top[0],
+        if lang == "zh" { "Probe" } else { "Probe" },
+        &selected_probe_name,
+        &selected_probe_detail,
+        CATPPUCCIN_MOCHA.primary,
+    );
+    draw_metric_panel(
+        f,
+        top[1],
+        if lang == "zh" { "Target" } else { "Target" },
+        target_name,
+        target_status,
+        CATPPUCCIN_MOCHA.info,
+    );
+    draw_metric_panel(
+        f,
+        top[2],
+        if lang == "zh" { "Cores" } else { "Cores" },
+        "Core 0",
         if lang == "zh" {
-            "未选择".into()
+            "halt/run/step 预留"
         } else {
-            "NONE".into()
-        }
-    });
-    let telemetry_points = app
-        .get_selected_port()
-        .and_then(|port| app.waveform_history.get(&port).map(Vec::len))
-        .unwrap_or(0);
-    let latest_channels = app
-        .get_selected_port()
-        .and_then(|port| app.waveform_history.get(&port))
-        .and_then(|frames| frames.last())
-        .map(Vec::len)
-        .unwrap_or(0);
+            "halt/run/step ready"
+        },
+        CATPPUCCIN_MOCHA.accent,
+    );
+    draw_metric_panel(
+        f,
+        top[3],
+        if lang == "zh" { "Flash" } else { "Flash" },
+        &firmware_size,
+        &firmware_path,
+        CATPPUCCIN_MOCHA.success,
+    );
 
-    let title = if lang == "zh" {
-        " 仪表盘工作台 - 未预设模块 "
-    } else {
-        " Dashboard Workspace - No Preset Modules "
-    };
+    draw_list_panel(
+        f,
+        body_top[0],
+        if lang == "zh" {
+            " 连接状态 "
+        } else {
+            " Connection "
+        },
+        connection_lines(app, lang),
+    );
+    draw_list_panel(
+        f,
+        body_top[1],
+        if lang == "zh" {
+            " Target/Core "
+        } else {
+            " Target/Core "
+        },
+        vec![
+            metric_line(if lang == "zh" { "目标" } else { "target" }, target_name),
+            metric_line(if lang == "zh" { "状态" } else { "state" }, target_status),
+            metric_line(
+                if lang == "zh" {
+                    "当前 Core"
+                } else {
+                    "active core"
+                },
+                "0",
+            ),
+            metric_line("PC", "pending attach"),
+            metric_line("SP", "pending attach"),
+            metric_line("halt reason", "pending attach"),
+        ],
+    );
+    draw_list_panel(
+        f,
+        body_top[2],
+        if lang == "zh" {
+            " Flash 下载 "
+        } else {
+            " Flash Download "
+        },
+        vec![
+            metric_line(
+                if lang == "zh" { "文件" } else { "file" },
+                firmware_path.clone(),
+            ),
+            metric_line(if lang == "zh" { "大小" } else { "size" }, firmware_size),
+            metric_line(
+                if lang == "zh" { "格式" } else { "format" },
+                firmware_format(&firmware_path),
+            ),
+            metric_line(
+                if lang == "zh" { "地址" } else { "base addr" },
+                app.config.app_offset.clone(),
+            ),
+            metric_line(
+                if lang == "zh" { "擦除" } else { "erase" },
+                app.config.erase_mode.clone(),
+            ),
+            metric_line(
+                if lang == "zh" { "校验" } else { "verify" },
+                app.config.verify_method.clone(),
+            ),
+        ],
+    );
+    draw_list_panel(
+        f,
+        body_top[3],
+        if lang == "zh" {
+            " Registers "
+        } else {
+            " Registers "
+        },
+        vec![
+            metric_line("R0-R3", "pending attach"),
+            metric_line("R4-R7", "pending attach"),
+            metric_line("R8-R12", "pending attach"),
+            metric_line("LR", "pending attach"),
+            metric_line("xPSR", "pending attach"),
+            metric_line("MSP/PSP", "pending attach"),
+        ],
+    );
+    draw_list_panel(
+        f,
+        body_bottom[0],
+        if lang == "zh" {
+            " Memory Viewer "
+        } else {
+            " Memory Viewer "
+        },
+        vec![
+            metric_line(if lang == "zh" { "地址" } else { "address" }, "0x00000000"),
+            metric_line(if lang == "zh" { "长度" } else { "length" }, "256 bytes"),
+            metric_line(
+                if lang == "zh" { "格式" } else { "format" },
+                "hex / u8 / u16 / u32",
+            ),
+            metric_line(if lang == "zh" { "RAM" } else { "RAM" }, "map pending"),
+            metric_line(if lang == "zh" { "Flash" } else { "Flash" }, "map pending"),
+            metric_line(
+                if lang == "zh" { "操作" } else { "actions" },
+                "read / write / dump",
+            ),
+        ],
+    );
+    draw_list_panel(
+        f,
+        body_bottom[1],
+        if lang == "zh" {
+            " RTT / Logs "
+        } else {
+            " RTT / Logs "
+        },
+        vec![
+            metric_line(if lang == "zh" { "状态" } else { "state" }, "detached"),
+            metric_line(
+                if lang == "zh" {
+                    "上行通道"
+                } else {
+                    "up channels"
+                },
+                "pending scan",
+            ),
+            metric_line(
+                if lang == "zh" {
+                    "下行通道"
+                } else {
+                    "down channels"
+                },
+                "pending scan",
+            ),
+            metric_line(if lang == "zh" { "吞吐" } else { "throughput" }, "0B/s"),
+            metric_line(
+                if lang == "zh" {
+                    "日志缓存"
+                } else {
+                    "log buffer"
+                },
+                format!("{} lines", app.logs.len()),
+            ),
+            metric_line(
+                if lang == "zh" { "发送" } else { "send" },
+                "down channel ready",
+            ),
+        ],
+    );
+    draw_list_panel(
+        f,
+        body_bottom[2],
+        if lang == "zh" {
+            " Fault 诊断 "
+        } else {
+            " Fault Analysis "
+        },
+        vec![
+            metric_line("HardFault", "pending halt"),
+            metric_line("CFSR/HFSR", "pending read"),
+            metric_line("MMFAR/BFAR", "pending read"),
+            metric_line("stack", "pending unwind"),
+            metric_line("symbol", "ELF symbols pending"),
+            metric_line("reason", "attach target first"),
+        ],
+    );
+    draw_list_panel(
+        f,
+        body_bottom[3],
+        if lang == "zh" {
+            " Profiling "
+        } else {
+            " Profiling "
+        },
+        vec![
+            metric_line(
+                if lang == "zh" {
+                    "PC 采样"
+                } else {
+                    "PC samples"
+                },
+                "0",
+            ),
+            metric_line(
+                if lang == "zh" {
+                    "热点地址"
+                } else {
+                    "hot addresses"
+                },
+                "pending run",
+            ),
+            metric_line(if lang == "zh" { "符号" } else { "symbols" }, "ELF pending"),
+            metric_line(
+                if lang == "zh" {
+                    "栈水位"
+                } else {
+                    "stack watermark"
+                },
+                "pending pattern",
+            ),
+            metric_line(
+                if lang == "zh" {
+                    "读速率"
+                } else {
+                    "read speed"
+                },
+                "0B/s",
+            ),
+            metric_line(
+                if lang == "zh" { "目标" } else { "goal" },
+                "performance tuning",
+            ),
+        ],
+    );
 
-    let compact = area.height < 16 || area.width < 82;
-    let mut lines = vec![
-        Line::from(""),
+    let footer = Paragraph::new(vec![
         Line::from(vec![
             Span::styled(
                 if lang == "zh" {
-                    "  当前端口  "
+                    "Probe-rs 能力面板  "
                 } else {
-                    "  Active Port  "
+                    "Probe-rs capability panel  "
                 },
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
-            Span::styled(
-                selected_port,
                 Style::default()
-                    .fg(CATPPUCCIN_MOCHA.primary)
+                    .fg(CATPPUCCIN_MOCHA.text)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("    "),
             Span::styled(
                 if lang == "zh" {
-                    "遥测缓存  "
+                    if selected_probe.is_some() {
+                        "调试探针已发现；可继续接入 attach / halt / reset / memory"
+                    } else if selected_serial.is_some() {
+                        "已发现串口设备；probe-rs attach 需要 ESP32-S3 USB-JTAG 或外置调试器"
+                    } else {
+                        "未发现设备；请检查 USB、权限或端口扫描"
+                    }
                 } else {
-                    "Telemetry  "
+                    if selected_probe.is_some() {
+                        "debug probe found; attach / halt / reset / memory can be wired next"
+                    } else if selected_serial.is_some() {
+                        "serial device found; probe-rs attach needs ESP32-S3 USB-JTAG or an external probe"
+                    } else {
+                        "no device found; check USB, permissions, or rescan ports"
+                    }
+                },
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                if lang == "zh" {
+                    "仪表盘  "
+                } else {
+                    "Dashboard  "
                 },
                 Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
             Span::styled(
-                format!("{} frames / {} ch", telemetry_points, latest_channels),
-                Style::default().fg(CATPPUCCIN_MOCHA.info),
-            ),
-            Span::raw("    "),
-            Span::styled(
                 if lang == "zh" {
-                    "模块  "
+                    "probe-rs 固定视图"
                 } else {
-                    "Modules  "
+                    "probe-rs fixed view"
                 },
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            ),
-            Span::styled(
-                format!("{}/6", app.dashboard_widgets.len()),
                 Style::default().fg(CATPPUCCIN_MOCHA.success),
             ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("  "),
-            action_chip(
+            Span::styled(
                 if lang == "zh" {
-                    "添加模块"
+                    "  寄存器 / 内存 / RTT / 性能分析"
                 } else {
-                    "Add Module"
+                    "  registers / memory / RTT / profiling"
                 },
-                CATPPUCCIN_MOCHA.success,
-                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::AddCatalog),
-            ),
-            Span::raw("  "),
-            action_chip(
-                "Button",
-                CATPPUCCIN_MOCHA.primary,
-                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Button),
-            ),
-            Span::raw("  "),
-            action_chip(
-                "Slider",
-                CATPPUCCIN_MOCHA.accent,
-                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Slider),
-            ),
-            Span::raw("  "),
-            action_chip(
-                "Dashboard",
-                CATPPUCCIN_MOCHA.info,
-                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Dashboard),
-            ),
-            Span::raw("  "),
-            action_chip(
-                "Image",
-                CATPPUCCIN_MOCHA.warning,
-                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Image),
+                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
             ),
         ]),
-    ];
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
+            .title(Span::styled(
+                if lang == "zh" {
+                    " 仪表盘 "
+                } else {
+                    " Dashboard "
+                },
+                Style::default()
+                    .fg(CATPPUCCIN_MOCHA.text)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    )
+    .style(Style::default().bg(CATPPUCCIN_MOCHA.panel));
+    f.render_widget(footer, outer[2]);
+}
 
-    if !compact {
-        lines.extend([
-            Line::from(""),
-            Line::from(Span::styled(
+fn connection_lines(app: &App, lang: &str) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = app
+        .channels
+        .iter()
+        .filter(|channel| channel.port.starts_with("probe:"))
+        .take(6)
+        .map(|channel| {
+            metric_line(
+                short_probe_name(&channel.port),
+                format!(
+                    "{} {}",
+                    channel.usb_product.as_deref().unwrap_or("probe-rs"),
+                    channel.status
+                ),
+            )
+        })
+        .collect();
+
+    let serial_lines: Vec<Line<'static>> = app
+        .channels
+        .iter()
+        .filter(|channel| !channel.port.starts_with("probe:"))
+        .take(4)
+        .map(|channel| {
+            metric_line(
                 if lang == "zh" {
-                    "  推荐：点击下面任一行直接添加，也可以点击上方添加模块打开完整目录。"
+                    "串口设备"
                 } else {
-                    "  Suggested: click a row to add it, or click Add Module for the full catalog."
+                    "serial board"
                 },
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            )),
-            Line::from(""),
-            suggestion_line(
-                "Button",
-                if lang == "zh" {
-                    "串口 START / STOP / RESET / PING 控制面板"
-                } else {
-                    "Serial START / STOP / RESET / PING command panel"
-                },
-                CATPPUCCIN_MOCHA.primary,
-                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Button),
-            ),
-            suggestion_line(
-                "Slider",
-                if lang == "zh" {
-                    "可点击调节 Kp / Ki / Kd 参数"
-                } else {
-                    "Clickable Kp / Ki / Kd tuning controls"
-                },
-                CATPPUCCIN_MOCHA.accent,
-                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Slider),
-            ),
-            suggestion_line(
-                "Dashboard",
-                if lang == "zh" {
-                    "电机状态、目标速度和控制输出摘要"
-                } else {
-                    "Motor state, target speed, and control output summary"
-                },
-                CATPPUCCIN_MOCHA.info,
-                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Dashboard),
-            ),
-            suggestion_line(
-                "Image",
-                if lang == "zh" {
-                    "查看 VOFA 图像或 ROI 数据"
-                } else {
-                    "View VOFA image or ROI payloads"
-                },
-                CATPPUCCIN_MOCHA.warning,
-                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Image),
-            ),
-            suggestion_line(
-                "Cube",
-                if lang == "zh" {
-                    "需要 IMU 姿态时再手动添加"
-                } else {
-                    "Add manually when IMU orientation is needed"
-                },
-                CATPPUCCIN_MOCHA.success,
-                app.hover_dashboard_empty_action == Some(DashboardEmptyAction::Cube),
-            ),
-            Line::from(""),
-            Line::from(Span::styled(
-                if lang == "zh" {
-                    "  鼠标：点击推荐模块添加；键盘：A 打开目录，D 删除模块，方向键切换模块。"
-                } else {
-                    "  Mouse: click suggestions to add; Keyboard: A catalog, D delete, arrows switch panes."
-                },
-                Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-            )),
-        ]);
-    } else {
-        lines.push(Line::from(Span::styled(
+                format!("{} {}", channel.port, serial_device_label(channel)),
+            )
+        })
+        .collect();
+
+    if lines.is_empty() {
+        lines.push(metric_line(
             if lang == "zh" {
-                "  小屏模式：点击上方按钮，或按 A 打开目录。"
+                "调试探针"
             } else {
-                "  Compact: click a button above, or press A for catalog."
+                "debug probe"
             },
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-        )));
+            if lang == "zh" {
+                "未发现；probe-rs list 为空"
+            } else {
+                "not found; probe-rs list is empty"
+            },
+        ));
+    }
+    lines.extend(serial_lines);
+
+    if lines.len() == 1 && app.channels.is_empty() {
+        lines.push(metric_line(
+            if lang == "zh" {
+                "串口设备"
+            } else {
+                "serial board"
+            },
+            if lang == "zh" {
+                "未发现；请扫描端口"
+            } else {
+                "not found; rescan ports"
+            },
+        ));
     }
 
+    lines
+}
+
+fn serial_device_label(channel: &crate::app::Channel) -> String {
+    let product = channel
+        .usb_product
+        .as_deref()
+        .or(channel.usb_manufacturer.as_deref())
+        .unwrap_or("USB serial");
+    match (channel.vid, channel.pid) {
+        (Some(vid), Some(pid)) => format!("{} {:04x}:{:04x}", product, vid, pid),
+        _ => product.to_string(),
+    }
+}
+
+fn short_probe_name(port: &str) -> String {
+    let parts: Vec<&str> = port.split(':').collect();
+    if parts.len() >= 4 {
+        format!("{}:{} {}", parts[1], parts[2], parts[3])
+    } else {
+        port.to_string()
+    }
+}
+
+fn probe_firmware_label(app: &App) -> String {
+    app.config
+        .images
+        .iter()
+        .find(|img| !img.path.trim().is_empty())
+        .map(|img| img.path.clone())
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or_else(|| app.config.app_path.clone())
+}
+
+fn firmware_format(path: &str) -> String {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_uppercase())
+        .unwrap_or_else(|| "BIN".to_string())
+}
+
+fn draw_metric_panel(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    value: &str,
+    detail: &str,
+    color: ratatui::style::Color,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
+        .title(Span::styled(
+            format!(" {} ", title),
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+        ))
+        .style(Style::default().bg(CATPPUCCIN_MOCHA.panel));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let p = Paragraph::new(vec![
+        Line::from(Span::styled(
+            value.to_string(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            detail.to_string(),
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+        )),
+    ])
+    .alignment(Alignment::Center)
+    .style(Style::default().bg(CATPPUCCIN_MOCHA.panel));
+    f.render_widget(p, inner);
+}
+
+fn metric_line(label: impl Into<String>, value: impl Into<String>) -> Line<'static> {
+    let label = label.into();
+    let value = value.into();
+    Line::from(vec![
+        Span::styled(
+            format!("  {:<14}", label),
+            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
+        ),
+        Span::styled(value, Style::default().fg(CATPPUCCIN_MOCHA.text)),
+    ])
+}
+
+fn draw_list_panel(f: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>) {
     let p = Paragraph::new(lines)
         .block(
             Block::default()
@@ -296,143 +640,25 @@ fn draw_welcome_screen(f: &mut Frame, app: &App, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(CATPPUCCIN_MOCHA.border))
                 .title(Span::styled(
-                    title,
+                    title.to_string(),
                     Style::default()
                         .fg(CATPPUCCIN_MOCHA.text)
                         .add_modifier(Modifier::BOLD),
                 )),
         )
         .style(Style::default().bg(CATPPUCCIN_MOCHA.panel))
-        .alignment(Alignment::Left);
-
+        .wrap(Wrap { trim: true });
     f.render_widget(p, area);
 }
 
-fn action_chip(label: &str, color: ratatui::style::Color, hovered: bool) -> Span<'_> {
-    Span::styled(
-        format!("[ {} ]", label),
-        Style::default().fg(mocha::CRUST).bg(color).add_modifier(
-            Modifier::BOLD
-                | if hovered {
-                    Modifier::REVERSED
-                } else {
-                    Modifier::empty()
-                },
-        ),
-    )
-}
-
-fn suggestion_line<'a>(
-    label: &'a str,
-    description: &'a str,
-    color: ratatui::style::Color,
-    hovered: bool,
-) -> Line<'a> {
-    Line::from(vec![
-        Span::raw("  "),
-        Span::styled(
-            format!("{:<10}", label),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(description, Style::default().fg(CATPPUCCIN_MOCHA.text)),
-    ])
-    .style(if hovered {
-        Style::default()
-            .bg(CATPPUCCIN_MOCHA.selection_bg)
-            .add_modifier(Modifier::BOLD)
+fn format_bytes(bytes: usize) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1}MB", bytes as f64 / 1024.0 / 1024.0)
+    } else if bytes >= 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
     } else {
-        Style::default()
-    })
-}
-
-fn draw_add_widget_modal(f: &mut Frame, app: &App, area: Rect) {
-    let lang = &app.tool_config.language;
-    let filtered_items = get_filtered_catalog_items(&app.widget_search_input, lang);
-    let max_items = area.height.saturating_sub(8) as usize;
-
-    let mut lines = Vec::new();
-    lines.push(Line::from(Span::styled(
-        crate::ui::tr("dash_select_module_title", lang),
-        Style::default()
-            .fg(CATPPUCCIN_MOCHA.accent)
-            .add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(Span::styled(
-        "───────────────────────────────────────────────────",
-        Style::default().fg(CATPPUCCIN_MOCHA.border),
-    )));
-    lines.push(Line::from(""));
-
-    let search_label = format!(
-        "{}{}█",
-        crate::ui::tr("dash_search", lang),
-        app.widget_search_input
-    );
-    lines.push(Line::from(Span::styled(
-        search_label,
-        Style::default().fg(CATPPUCCIN_MOCHA.text),
-    )));
-    lines.push(Line::from(Span::styled(
-        "───────────────────────────────────────────────────",
-        Style::default().fg(CATPPUCCIN_MOCHA.border),
-    )));
-    lines.push(Line::from(""));
-
-    for (idx, (name, desc_key, _)) in filtered_items.iter().take(max_items).enumerate() {
-        let is_selected = app.add_menu_selected == idx;
-        let prefix = if is_selected {
-            Span::styled(
-                " ▶ ",
-                Style::default()
-                    .fg(CATPPUCCIN_MOCHA.accent)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::raw("   ")
-        };
-        let style = if is_selected {
-            Style::default()
-                .fg(CATPPUCCIN_MOCHA.text)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted)
-        };
-        let translated_desc = crate::ui::tr(desc_key, lang);
-        lines.push(Line::from(vec![
-            prefix,
-            Span::styled(format!("{:<18} : {}", name, translated_desc), style),
-        ]));
+        format!("{}B", bytes)
     }
-    if filtered_items.len() > max_items {
-        lines.push(Line::from(Span::styled(
-            format!("   ... {} more", filtered_items.len() - max_items),
-            Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-        )));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        crate::ui::tr("dash_modal_hint", lang),
-        Style::default().fg(CATPPUCCIN_MOCHA.text_muted),
-    )));
-
-    let p = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Double)
-                .border_style(Style::default().fg(CATPPUCCIN_MOCHA.accent))
-                .title(Span::styled(
-                    crate::ui::tr("dash_catalog_title", lang),
-                    Style::default()
-                        .fg(CATPPUCCIN_MOCHA.text)
-                        .add_modifier(Modifier::BOLD),
-                )),
-        )
-        .style(Style::default().bg(CATPPUCCIN_MOCHA.panel));
-
-    f.render_widget(Clear, area);
-    f.render_widget(p, area);
 }
 
 // Custom widget drawing functions

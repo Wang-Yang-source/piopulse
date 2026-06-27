@@ -105,6 +105,124 @@ pub enum WorkerMessage {
     MonitorStopped {
         port: String,
     },
+    PioBuildComplete {
+        success: bool,
+        message: String,
+    },
+}
+
+/// Spawn a background `pio run` build for the given PlatformIO project directory.
+/// Streams build output as Log messages and sends PioBuildComplete when done.
+pub fn start_pio_build_task(
+    project_dir: std::path::PathBuf,
+    env_name: Option<String>,
+    tx: Sender<WorkerMessage>,
+) {
+    tokio::spawn(async move {
+        let tx_clone = tx.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            use std::io::{BufRead, BufReader};
+            use std::process::{Command, Stdio};
+
+            let mut args = vec!["run".to_string()];
+            if let Some(env) = env_name.as_deref() {
+                args.push("-e".to_string());
+                args.push(env.to_string());
+            }
+
+            let _ = tx_clone.blocking_send(WorkerMessage::Log {
+                port: "BUILD".to_string(),
+                message: format!(
+                    "Auto-build: pio {} in {}",
+                    args.join(" "),
+                    project_dir.display()
+                ),
+            });
+
+            let mut child = Command::new("pio")
+                .args(&args)
+                .current_dir(&project_dir)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("Failed to spawn PlatformIO build: {}", e))?;
+
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| "Failed to capture stdout".to_string())?;
+            let stderr = child
+                .stderr
+                .take()
+                .ok_or_else(|| "Failed to capture stderr".to_string())?;
+
+            let tx_out = tx_clone.clone();
+            let out_thread = std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines().flatten() {
+                    let _ = tx_out.blocking_send(WorkerMessage::Log {
+                        port: "BUILD".to_string(),
+                        message: line,
+                    });
+                }
+            });
+
+            let tx_err = tx_clone.clone();
+            let err_thread = std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().flatten() {
+                    let _ = tx_err.blocking_send(WorkerMessage::Log {
+                        port: "BUILD".to_string(),
+                        message: line,
+                    });
+                }
+            });
+
+            let status = child
+                .wait()
+                .map_err(|e| format!("Failed to wait for PlatformIO build: {}", e))?;
+
+            let _ = out_thread.join();
+            let _ = err_thread.join();
+
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "PlatformIO build failed with exit code: {}",
+                    status
+                ))
+            }
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {
+                let _ = tx
+                    .send(WorkerMessage::PioBuildComplete {
+                        success: true,
+                        message: "PlatformIO build completed successfully.".to_string(),
+                    })
+                    .await;
+            }
+            Ok(Err(e)) => {
+                let _ = tx
+                    .send(WorkerMessage::PioBuildComplete {
+                        success: false,
+                        message: e,
+                    })
+                    .await;
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(WorkerMessage::PioBuildComplete {
+                        success: false,
+                        message: format!("Build task panicked: {}", e),
+                    })
+                    .await;
+            }
+        }
+    });
 }
 
 pub fn start_flashing_task(port: String, config: Arc<ProjectConfig>, tx: Sender<WorkerMessage>) {
